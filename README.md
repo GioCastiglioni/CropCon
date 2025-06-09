@@ -1,5 +1,3 @@
-[![Tests](https://github.com/yurujaja/geofm-bench/actions/workflows/python-test.yml/badge.svg)](https://github.com/yurujaja/geofm-bench/actions/workflows/python-test.yml)
-
 # CropCon: Crop-Type Contrastive Learning for Semantic Segmentation
 
 ## 📚 Introduction
