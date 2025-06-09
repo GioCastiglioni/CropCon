@@ -1,5 +1,5 @@
 trainer:
-  _target_: pangaea.engine.trainer.PreTrainer
+  _target_: cropcon.engine.trainer.PreTrainer
   # params overwritten in run
   model: null
   train_loader: null

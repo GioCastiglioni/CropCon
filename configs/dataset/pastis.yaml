@@ -1,4 +1,4 @@
-_target_: pangaea.datasets.pastis.Pastis
+_target_: cropcon.datasets.pastis.Pastis
 dataset_name: Pastis
 root_path: /home/gcast/datasets/PASTIS-HD
 download_url: null

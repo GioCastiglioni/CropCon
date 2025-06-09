@@ -1,4 +1,4 @@
-_target_: pangaea.utils.schedulers.CosineAnnealingWarmRestarts
+_target_: cropcon.utils.schedulers.CosineAnnealingWarmRestarts
 optimizer: null
 total_iters: null
 lr_milestones: [0.25]

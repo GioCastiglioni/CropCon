@@ -1,4 +1,4 @@
-_target_: pangaea.decoders.utae.UTAE
+_target_: cropcon.decoders.utae.UTAE
 
 encoder: null
 num_classes: ${dataset.num_classes}

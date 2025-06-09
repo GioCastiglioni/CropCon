@@ -38,20 +38,7 @@ pip install -r requirements.txt
 
 ## 🏋️ Training
 
-To run experiments, please refer to `configs/train.yaml`. In it, in addition to some basic info about training (e.g. `finetune` for fine-tuning also the encoder, `limited_label_train` to train the model on a stratified subset of labels, `num_workers`, `batch_size` and so on), there are 5 different basic configs:
-- `dataset`: Information of downstream datasets such as image size, band_statistics, classes etc.
-- `decoder`: Downstream task decoder fine-tuning related parameters, like the type of architecture (e.g. UPerNet), which multi-temporal strategy to use, and other related hparams (e.g. nr of channels)
-- `encoder`: GFM encoder related parameters. `output_layers` is used for which layers are used for Upernet decoder.  
-- `preprocessing`: Both preprocessing and augmentations steps required for the dataset, such as bands adaptation, normalization, resize/crop.
-
-
-Other 3 configs are used to set other training parameters:
-- `criterion`: in which you can choose the loss for the training. Consider that if you want to add a custom loss, you should add to `pangaea/utils/losses.py`. Currently, we support `cross_entropy`, `weigthed_cross_entropy`, `dice` and `mae` loss functions.
-- `lr_scheduler`: in which you can choose the scheduler. Consider that if you want to add a custom one, you should add to `pangaea/utils/schedulers.py`. 
-- `optimizer`: in which you can choose the optimizer. Consider that if you want to add a custom one, you should add to `pangaea/utils/optimizers.py`.
-
-
-We provide examples of command lines to initialize different training tasks on single GPU.
+To run experiments, please refer to `configs/train.yaml`. In it, in addition to some basic info about training (e.g. `finetune` for fine-tuning the encoder, `limited_label_train` to train the model on a stratified subset of labels, `num_workers`, `batch_size` and so on), there are different configs. We provide examples of command lines to initialize a training task on a single GPU.
 
 Please note:
  - The repo adopts [hydra](https://github.com/facebookresearch/hydra), so you can easily log your experiments and overwrite parameters from the command line. More examples are provided later.
@@ -66,7 +53,7 @@ export PYTHONPATH=/home/<USERNAME>/CropCon:$PYTHONPATH
 cd /home/<USERNAME>/CropCon
 ```
 ```
-torchrun --nnodes=1 --nproc_per_node=1 pangaea/run.py --config-name=train -m \
+torchrun --nnodes=1 --nproc_per_node=1 cropcon/run.py --config-name=train -m \
 dataset=pastis \
 dataset.multi_temporal=35 \
 encoder=utae_encoder \
