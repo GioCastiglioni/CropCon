@@ -2,8 +2,6 @@
 
 # CropCon: Crop-Type Contrastive Learning for Semantic Segmentation
 
-🔥 The [pre-print](https://arxiv.org/abs/2412.04204) is out!
-
 ## 📚 Introduction
 
 
@@ -12,7 +10,7 @@ For the moment, we support the following **models**:
 |             | Paper | GitHub | Keywords |
 |:-----------:|:-----:|:------:|:--------:|
 
-|  [U-TAE](https://arxiv.org/abs/2107.07933) | Panoptic Segmentation of Satellite Image Time Series with Convolutional Temporal Attention Networks    | [link](https://github.com/VSainteuf/utae-paps) | U-Net
+|  [U-TAE](https://arxiv.org/abs/2107.07933) | Panoptic Segmentation of Satellite Image Time Series with Convolutional Temporal Attention Networks    | [link](https://github.com/VSainteuf/utae-paps) | U-Net |
 
 
 And the following **datasets**:
