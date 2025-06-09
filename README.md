@@ -9,7 +9,6 @@ For the moment, we support the following **models**:
 
 |             | Paper | GitHub | Keywords |
 |:-----------:|:-----:|:------:|:--------:|
-
 |  [U-TAE](https://arxiv.org/abs/2107.07933) | Panoptic Segmentation of Satellite Image Time Series with Convolutional Temporal Attention Networks    | [link](https://github.com/VSainteuf/utae-paps) | U-Net |
 
 
