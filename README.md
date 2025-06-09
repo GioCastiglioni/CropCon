@@ -19,7 +19,6 @@ And the following **datasets**:
 |        [PASTIS-R](https://arxiv.org/abs/2404.08351)       |    [link](https://huggingface.co/datasets/IGNF/PASTIS-HD)       |   Agriculture     |  Semantic Segmentation    |    S1, S2, SPOT-6  | France   |
 
 The repository supports the following **tasks** using geospatial (foundation) models:
- - [Single Temporal Semantic Segmentation](#single-temporal-semantic-segmentation)
  - [Multi-Temporal Semantic Segmentation](#multi-temporal-semantic-segmentation)
 
 ## 🛠️ Setup
@@ -52,68 +51,43 @@ Other 3 configs are used to set other training parameters:
 - `optimizer`: in which you can choose the optimizer. Consider that if you want to add a custom one, you should add to `pangaea/utils/optimizers.py`.
 
 
-We provide several examples of command lines to initialize different training tasks on single GPU.
+We provide examples of command lines to initialize different training tasks on single GPU.
 
 Please note:
  - The repo adopts [hydra](https://github.com/facebookresearch/hydra), so you can easily log your experiments and overwrite parameters from the command line. More examples are provided later.
  - To use more gpus or nodes, set `--nnodes` and `--nproc_per_node` correspondingly. Please refer to the [torchrun doc](https://pytorch.org/docs/stable/elastic/run.html).
 
-### 💻 Decoder Finetuning
 #### Single Temporal Semantic Segmentation
-
-Take HLSBurnScars dataset, RemoteCLIP Encoder and Upernet Segmentation Decoder as example:
 ```
-torchrun --nnodes=1 --nproc_per_node=1 pangaea/run.py \
-   --config-name=train \
-   dataset=hlsburnscars \
-   encoder=remoteclip \
-   decoder=seg_upernet\
-   preprocessing=seg_default \
-   criterion=cross_entropy \
-   task=segmentation
+export PATH="$HOME/miniconda3/bin:$PATH"
+source "$HOME/miniconda3/etc/profile.d/conda.sh"
+conda activate CropCon
+export PYTHONPATH=/home/<USERNAME>/CropCon:$PYTHONPATH
+cd /home/<USERNAME>/CropCon
 ```
-
-If you want to overwrite some parameters (e.g. turn off wandbe, change batch size and the path to the dataset, and use 50% stratified sampled subset for training):
 ```
-torchrun --nnodes=1 --nproc_per_node=1 pangaea/run.py \
-   --config-name=train \
-   dataset=hlsburnscars \
-   encoder=remoteclip \
-   decoder=seg_upernet\
-   preprocessing=seg_default \
-   criterion=cross_entropy \
-   task=segmentation \
-   dataset.root_path= /path/to/the/dataset/hlsburnscars \
-   batch_size=16 \
-   use_wandb=False \
-   limited_label_train=0.5 \
-   limited_label_strategy=stratified
-```
-
-#### Multi-Temporal Semantic Segmentation
-- Multi-temporal decoder config (e.g. `configs/decoder/seg_upernet_mt_ltae.yaml` if you want to use `ltae` as a strategy to combine multi-temporal info) should be used. 
-- In addition, in the dataset config, indicate the number of time frames, e.g., `multi_temporal: 6`
-
-An example of using SSL4EO-DINO on CropTypeMapping is as below
-```
-torchrun --nnodes=1 --nproc_per_node=1 pangaea/run.py \
-   --config-name=train \
-   dataset=croptypemapping \
-   encoder=ssl4eo_dino \
-   decoder=seg_upernet_mt_ltae \
-   preprocessing=seg_resize \
-   criterion=cross_entropy \
-   task=segmentation
-```
-
-To use SatlasNet encoder, the `configs/encoder/satlasnet_mi.yaml` is required
-```
-torchrun --nnodes=1 --nproc_per_node=1 pangaea/run.py \
-   --config-name=train \
-   dataset=croptypemapping \
-   encoder=satlasnet_mi \
-   decoder=seg_upernet_mt_ltae \
-   preprocessing=seg_resize \
-   criterion=cross_entropy \
-   task=segmentation
+torchrun --nnodes=1 --nproc_per_node=1 pangaea/run.py --config-name=train -m \
+dataset=pastis \
+dataset.multi_temporal=35 \
+encoder=utae_encoder \
+decoder=seg_utae \
+batch_size=12 \
+test_batch_size=12 \
+preprocessing=seg_resize \
+criterion=cross_entropy \
+optimizer=adamw \
+optimizer.lr=0.0015 \
+ft_rate=1.0 \
+task=segmentation \
+finetune=True \
+from_scratch=True \
+lr_scheduler=multi_step_lr \
+work_dir="/home/<USERNAME>/CropCon/results" \
+use_wandb=True \
+wandb_project="CropCon" \
+num_workers=4 \
+test_num_workers=4 \
+limited_label_train=1.0 \
+limited_label_strategy=stratified \
+task.trainer.n_epochs=80
 ```
