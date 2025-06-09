@@ -14,7 +14,7 @@ And the following **datasets**:
 
 |                     | Download | Domain | Task | Sensors | Location |
 |:-------------------:|:--------:|:------:|:----:|:-------:|:--------:|
-|        [PASTIS-R](https://arxiv.org/abs/2404.08351)       |    [link](https://huggingface.co/datasets/IGNF/PASTIS-HD)       |   Agriculture     |  Semantic Segmentation    |    S1, S2, SPOT-6  | France   |
+|        [PASTIS-R](https://arxiv.org/abs/2107.07933)       |    [link](https://huggingface.co/datasets/IGNF/PASTIS-HD)       |   Agriculture     |  Semantic Segmentation    |    S1, S2, SPOT-6  | France   |
 
 The repository supports the following **tasks** using geospatial (foundation) models:
  - [Multi-Temporal Semantic Segmentation](#multi-temporal-semantic-segmentation)
