@@ -3,4 +3,4 @@ _target_: cropcon.decoders.utae.UTAE
 encoder: null
 num_classes: ${dataset.num_classes}
 finetune: ${finetune}
-dec_topology: [32, 32, 64, 128]
+dec_topology: [64, 64, 64, 128]

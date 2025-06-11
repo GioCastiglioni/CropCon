@@ -81,23 +81,13 @@ class UTAE(Decoder):
 
     def forward(self, x, batch_positions=None, return_feats=True):
         v1 = x["v1"]
-        feat_v1, att, feature_maps, pad_mask = self.forward_features(v1, batch_positions=batch_positions)
-        # SPATIAL DECODER
-        skip = self.temporal_aggregator(
-                feature_maps[-2], pad_mask=pad_mask, attn_mask=att
-            )
-        out = self.up_blocks[0](feat_v1, skip)
-        for i in range(1, len(self.topology) - 1):
-            skip = self.temporal_aggregator(
-                feature_maps[-(i + 2)], pad_mask=pad_mask, attn_mask=att
-            )
-            out = self.up_blocks[i](out, skip)
-
+        out = self.forward_features(v1, batch_positions=batch_positions)
         out = self.out_conv(out)
+
         if return_feats:
             v2 = x["v2"]
-            feat_v2, _, _, _ = self.forward_features(v2, batch_positions=batch_positions)
-            return out, feat_v1, feat_v2
+            feat_v2 = self.forward_features(v2, batch_positions=batch_positions)
+            return out, feat_v2
         else: return out
 
     def forward_features(self, input: dict[str, torch.Tensor], batch_positions=None) -> torch.Tensor:
@@ -117,7 +107,14 @@ class UTAE(Decoder):
         out, att = self.tmap(
             feature_maps[-1].permute(0,2,1,3,4), batch_positions=batch_positions.to(out.device), pad_mask=pad_mask
         )
-        return out, att, feature_maps, pad_mask
+
+        for i in range(len(self.topology) - 1):
+            skip = self.temporal_aggregator(
+                feature_maps[-(i + 2)], pad_mask=pad_mask, attn_mask=att
+            )
+            out = self.up_blocks[i](out, skip)
+
+        return out
 
 
 class TemporallySharedBlock(nn.Module):

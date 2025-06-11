@@ -61,7 +61,7 @@ class AttentionProjectionHead(nn.Module):
 
 class SupContrastiveLoss(torch.nn.Module):
 
-    def __init__(self, tau=0.2):
+    def __init__(self, tau=0.1):
         super().__init__()
         self.tau = tau
     
@@ -115,6 +115,8 @@ class Trainer:
         eval_interval: int,
         log_interval: int,
         best_metric_key: str,
+        tau: float,
+        alpha: float
     ):
         """Initialize the Trainer.
 
@@ -134,6 +136,8 @@ class Trainer:
             eval_interval (int): interval to evaluate the model.
             log_interval (int): interval to log the training information.
             best_metric_key (str): metric that determines best checkpoints.
+            tau (float): temperature parameter for SupCon.
+            alpha (float): weighting factor for CE and SupCon losses.
         """
         self.rank = int(os.environ["RANK"])
         self.criterion = criterion
@@ -180,10 +184,14 @@ class Trainer:
 
         self.channel_drop = T.Compose([RandomChannelDropout(p=0.7, num_drop=6)])
         
-        self.alpha = 0.1
+        self.alpha = alpha
 
-        self.contrastive = SupContrastiveLoss()
-        self.projector = AttentionProjectionHead(embed_dim=model.module.topology[-1], mlp_hidden_dim=128, projection_dim=64).to(self.device)
+        self.contrastive = SupContrastiveLoss(tau=tau)
+        self.projector = AttentionProjectionHead(
+            embed_dim=self.model.module.dec_topology[0],
+            mlp_hidden_dim=128,
+            projection_dim=128
+            ).to(self.device)
     
     def train(self) -> None:
         """Train the model for n_epochs then evaluate the model and save the best model."""
@@ -305,24 +313,27 @@ class Trainer:
         end_time = time.time()
         for batch_idx, data in enumerate(self.train_loader):
             image, target = data["image"], data["target"]
-            B,C,Temp,H,W = image["optical"].shape
             image = {"v1": image["optical"].to(self.device)}
             target = target.to(self.device)
-            image["v2"], target = self.temporal_transform(image["v1"], target)
+            image["v2"], target_transformed = self.temporal_transform(
+                image["v1"].detach().clone().requires_grad_(True),
+                target.detach().clone()
+                )
 
             self.training_stats["data_time"].update(time.time() - end_time)
 
             with torch.autocast(
                 "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
             ):
-                logits, _, feat_v2  = self.model(image, batch_positions=data["metadata"])
+                logits, feat_v2  = self.model(image,
+                                              batch_positions=data["metadata"],
+                                              return_feats=True)
                 loss_ce = self.compute_loss(logits, target)
-                mask = target.unsqueeze(1).float()        # shape: [B, 1, H, W]
-                downsampled_mask = F.interpolate(
-                    mask, size=(feat_v2.shape[2], feat_v2.shape[3]), mode='nearest'
-                ).squeeze(1).long()
 
-                feat_con, target_con = self.extract_classwise_representations(feat_v2, downsampled_mask)
+                feat_con, target_con = self.extract_classwise_representations(
+                    feat_v2,
+                    target_transformed.unsqueeze(1).float()
+                    )
 
                 proj = self.projector(feat_con)
 
@@ -559,6 +570,8 @@ class SegTrainer(Trainer):
         eval_interval: int,
         log_interval: int,
         best_metric_key: str,
+        tau: float,
+        alpha: float
     ):
         """Initialize the Trainer for segmentation task.
         Args:
@@ -594,6 +607,8 @@ class SegTrainer(Trainer):
             eval_interval=eval_interval,
             log_interval=log_interval,
             best_metric_key=best_metric_key,
+            tau=tau,
+            alpha=alpha
         )
 
         self.training_metrics = {
@@ -665,92 +680,4 @@ class SegTrainer(Trainer):
         self.training_metrics["Acc"].update(acc.item())
         self.training_metrics["mAcc"].update(macc.item())
         self.training_metrics["mIoU"].update(miou.item())
-
-
-class RegTrainer(Trainer):
-    def __init__(
-        self,
-        model: nn.Module,
-        train_loader: DataLoader,
-        criterion: nn.Module,
-        optimizer: Optimizer,
-        lr_scheduler: LRScheduler,
-        evaluator: torch.nn.Module,
-        n_epochs: int,
-        exp_dir: pathlib.Path | str,
-        device: torch.device,
-        precision: str,
-        use_wandb: bool,
-        ckpt_interval: int,
-        eval_interval: int,
-        log_interval: int,
-        best_metric_key: str,
-    ):
-        """Initialize the Trainer for regression task.
-        Args:
-            model (nn.Module): model to train (encoder + decoder).
-            train_loader (DataLoader): train data loader.
-            criterion (nn.Module): criterion to compute the loss.
-            optimizer (Optimizer): optimizer to update the model's parameters.
-            lr_scheduler (LRScheduler): lr scheduler to update the learning rate.
-            evaluator (torch.nn.Module): task evaluator to evaluate the model.
-            n_epochs (int): number of epochs to train the model.
-            exp_dir (pathlib.Path | str): path to the experiment directory.
-            device (torch.device): model
-            precision (str): precision to train the model (fp32, fp16, bfp16).
-            use_wandb (bool): whether to use wandb for logging.
-            ckpt_interval (int): interval to save the checkpoint.
-            eval_interval (int): interval to evaluate the model.
-            log_interval (int): interval to log the training information.
-            best_metric_key (str): metric that determines best checkpoints.
-        """
-        super().__init__(
-            model=model,
-            train_loader=train_loader,
-            criterion=criterion,
-            optimizer=optimizer,
-            lr_scheduler=lr_scheduler,
-            evaluator=evaluator,
-            n_epochs=n_epochs,
-            exp_dir=exp_dir,
-            device=device,
-            precision=precision,
-            use_wandb=use_wandb,
-            ckpt_interval=ckpt_interval,
-            eval_interval=eval_interval,
-            log_interval=log_interval,
-            best_metric_key=best_metric_key,
-        )
-
-        self.training_metrics = {
-            name: RunningAverageMeter(length=100) for name in ["MSE"]
-        }
-        self.best_metric = float("inf")
-        self.best_metric_comp = operator.lt
-
-    def compute_loss(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """Compute the loss.
-
-        Args:
-            logits (torch.Tensor): logits from the decoder.
-            target (torch.Tensor): target tensor.
-
-        Returns:
-            torch.Tensor: loss value.
-        """
-        return self.criterion(logits.squeeze(dim=1), target)
-
-    @torch.no_grad()
-    def compute_logging_metrics(
-        self, logits: torch.Tensor, target: torch.Tensor
-    ) -> None:
-        """Compute logging metrics.
-
-        Args:
-            logits (torch.Tensor): logits from the decoder.
-            target (torch.Tensor): target tensor.
-        """
-
-        mse = F.mse_loss(logits.squeeze(dim=1), target)  
-        self.training_metrics["MSE"].update(mse.item())
 
