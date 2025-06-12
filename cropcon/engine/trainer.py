@@ -8,94 +8,17 @@ import numpy as np
 
 import torch
 import torch.nn as nn
-import torchvision.transforms.v2 as T
 from torch.nn import functional as F
+import torchvision.transforms.v2 as T
+
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
 from torch.utils.data import DataLoader, Subset
+
 from cropcon.utils.logger import RunningAverageMeter, sec_to_hm
-
-class RandomChannelDropout(torch.nn.Module):
-    def __init__(self, p=0.5, num_drop=1):
-        """
-        Randomly drops 1 to `num_drop` channels with probability `p`
-        """
-        super().__init__()
-        self.p = p
-        self.num_drop = num_drop
-
-    def forward(self, x):
-        if torch.rand(1).item() < self.p:
-            # Select `num_drop` random channels
-            C = x.shape[1]  # Number of channels
-            drop_indices = torch.randperm(C)[:torch.randint(low=1, high=self.num_drop, size=(1,))]
-            x[:, drop_indices, :, :] = 0  # Set selected channels to zero
-        return x
-
-class AttentionProjectionHead(nn.Module):
-    def __init__(self, embed_dim, mlp_hidden_dim, projection_dim, num_heads=4):
-        super().__init__()
-        self.attn = nn.MultiheadAttention(embed_dim, num_heads)
-
-        # Optional: layer norm (common before attention in some Transformer variants)
-        self.norm1 = nn.LayerNorm(embed_dim)
-
-        # MLP projection head
-        self.mlp = nn.Sequential(
-            nn.Linear(embed_dim, mlp_hidden_dim),
-            nn.ReLU(),
-            nn.Linear(mlp_hidden_dim, projection_dim)
-        )
-
-    def forward(self, x):
-        # Optional: normalize input first
-        x = self.norm1(x).unsqueeze(0)
-        # Multihead attention (self-attention)
-        attn_output, _ = self.attn(x, x, x)
-        pooled = attn_output.squeeze(0)  # shape: [batch_size, embed_dim]
-        # Project through MLP
-        projected = self.mlp(pooled)
-        # Normalize to hypersphere
-        normalized = F.normalize(projected, p=2, dim=-1)
-        return normalized    
-
-class SupContrastiveLoss(torch.nn.Module):
-
-    def __init__(self, tau=0.1):
-        super().__init__()
-        self.tau = tau
-    
-    def forward(self, projection, y):
-        """This function generate the loss function based on SupContrast
-
-        Args:
-            projection (_type_): _description_
-            y (_type_): _description_
-        """
-        correlation = (projection @ projection.T) / self.tau
-        _max = torch.max(correlation, dim=1, keepdim=True)[0]
-
-        exp_dot = torch.exp(correlation - _max) + 1e-7
-
-        mask = (y.unsqueeze(1).repeat(1, len(y)) == y).to(projection.device)
-        
-        anchor_out = (1 - torch.eye(len(y))).to(projection.device)
-
-        pij = mask * anchor_out # positives mask
-
-        log_prob = -torch.log(
-            exp_dot / torch.sum(exp_dot * anchor_out, dim=1, keepdim=True)
-        )
-
-        loss_samples = (
-            torch.sum(log_prob * pij, dim=1) / (pij.sum(dim=1) + 1e-7)
-        )
-
-        return loss_samples.mean()
-
-
-    def __str__(self):
-        return 'SupContrastiveLoss'
+from cropcon.utils.losses import SupContrastiveLoss
+from cropcon.utils.utils import RandomChannelDropout, ConsistentTransform
+from cropcon.decoders.base import AttentionProjectionHead
 
 class Trainer:
     def __init__(
@@ -181,7 +104,7 @@ class Trainer:
 
             self.wandb = wandb
 
-        self.channel_drop = T.Compose([RandomChannelDropout(p=0.7, num_drop=6)])
+        self.channel_drop = T.Compose([RandomChannelDropout(p=0.5, max_drop=5)])
         
         self.alpha = alpha
 
@@ -253,11 +176,7 @@ class Trainer:
         return feature_tensor, target_tensor
 
     def get_transform(self):
-        return T.Compose([
-            T.RandomRotation(degrees=45),
-            T.RandomHorizontalFlip(p=0.7),
-            T.RandomVerticalFlip(p=0.7),
-        ])
+        return ConsistentTransform(degrees=30, p=0.5)
     
     def temporal_transform(self, x: torch.Tensor, mask: torch.Tensor):
         """
@@ -270,35 +189,23 @@ class Trainer:
         x = x.permute(0, 2, 1, 3, 4).reshape(B*Temp, C, H, W)  # → [B*T, C, H, W]
 
         # Prepare output tensors
-        x_out = torch.empty_like(x)
-        mask_out = torch.empty_like(mask)
+        x_out = torch.empty((B,C,Temp,H,W), device=x.device)
+        mask_out = torch.empty((B,H,W), device=x.device)
 
         for b in range(B):
+            x_b = x[b*Temp:(b+1)*Temp]  # [T, C, H, W]
+            x_b, drop_idx = self.channel_drop(x_b)  # same dropout across T
 
-            # Seed RNG to ensure consistent transformation across T frames
-            seed = torch.randint(0, 10000, ()).item()
-            torch.manual_seed(seed)
+            m_b = mask[b].expand(Temp, H, W)
+            tf = self.get_transform().to(x.device)
+            sample = tf({"image": x_b, "mask": m_b})
 
-            # Get the same transform instance for this sequence
-            tf = self.get_transform()
+            x_b = sample["image"].permute(1, 0, 2, 3)
+            m_b = sample["mask"][0]
 
-            # Slice frames and mask
-            x_b = x[b*Temp:(b+1)*Temp]  # shape: [T, C, H, W]
-            m_b = mask[b][None, None]  # [H, W] → [1, 1, H, W]
+            x_out[b] = x_b
+            mask_out[b] = m_b
 
-            # Apply same transform to each frame
-            x_b_aug = []
-            for t in range(Temp):
-                # Each frame gets same transform instance
-                sample = tf({"image": self.channel_drop(x_b[t][None]), "mask": m_b})
-                x_b_aug.append(sample["image"])
-                if t == 0:
-                    m_b_aug = sample["mask"].squeeze(0).squeeze(0)
-
-            x_out[b*Temp:(b+1)*Temp] = torch.cat(x_b_aug, dim=0)
-            mask_out[b] = m_b_aug
-
-        x_out = x_out.reshape(B, Temp, C, H, W).permute(0, 2, 1, 3, 4)
         return x_out, mask_out
 
     def train_one_epoch(self, epoch: int) -> None:
@@ -314,10 +221,10 @@ class Trainer:
             image, target = data["image"], data["target"]
             image = {"v1": image["optical"].to(self.device)}
             target = target.to(self.device)
-            image["v2"], target_transformed = self.temporal_transform(
-                image["v1"].detach().clone().requires_grad_(True),
-                target.detach().clone()
-                )
+            image["v2"], target_transformed = image["v1"], target #self.temporal_transform(
+                #image["v1"].detach().clone().requires_grad_(True),
+                #target.detach().clone()
+                #)
 
             self.training_stats["data_time"].update(time.time() - end_time)
 

@@ -5,6 +5,7 @@ from torch.optim.optimizer import Optimizer
 
 import numpy as np
 import torch
+import torchvision.transforms.v2.functional as Fv
 
 
 def seed_worker(worker_id):
@@ -112,3 +113,56 @@ class LARS(torch.optim.Optimizer):
 
     def register_state_dict_post_hook(self, hook):
         return self.optimizer.register_state_dict_post_hook(hook)
+
+
+class RandomChannelDropout(torch.nn.Module):
+    def __init__(self, p=0.5, max_drop=1):
+        super().__init__()
+        self.p = p
+        self.max_drop = max_drop
+
+    def forward(self, x, drop_indices=None):
+        """
+        x: [T, C, H, W] or [C, H, W]
+        drop_indices: if provided, drops the same indices
+        """
+        if drop_indices is None and torch.rand(1).item() < self.p:
+            C = x.shape[1]
+            num_drop = torch.randint(1, self.max_drop + 1, ())
+            drop_indices = torch.randperm(C)[:num_drop]
+
+        if drop_indices is not None:
+            # Zero out selected channels out-of-place
+            mask = torch.ones_like(x)
+            mask[:, drop_indices, :, :] = 0
+            x = x * mask
+
+        return x, drop_indices
+
+
+class ConsistentTransform(torch.nn.Module):
+    def __init__(self, degrees=30, p=0.5):
+        super().__init__()
+        self.degrees = degrees
+        self.hflip_p = p
+        self.vflip_p = p
+
+    def forward(self, sample):
+        img, mask = sample["image"], sample["mask"]
+        # Sample random parameters
+        angle = torch.empty(1).uniform_(-self.degrees, self.degrees).item()
+        do_hflip = torch.rand(1).item() < self.hflip_p
+        do_vflip = torch.rand(1).item() < self.vflip_p
+
+        # Apply same transform to all frames
+        img = Fv.rotate(img, angle)
+        mask = Fv.rotate(mask, angle)
+
+        if do_hflip:
+            img = Fv.hflip(img)
+            mask = Fv.hflip(mask)
+        if do_vflip:
+            img = Fv.vflip(img)
+            mask = Fv.vflip(mask)
+
+        return {"image": img, "mask": mask}

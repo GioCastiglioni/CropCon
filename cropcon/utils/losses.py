@@ -231,3 +231,42 @@ class CCALoss(torch.nn.Module):
         loss = -cca_corr.sum()  # Negative because we want to maximize correlation
 
         return loss
+
+
+class SupContrastiveLoss(torch.nn.Module):
+
+    def __init__(self, tau=0.1):
+        super().__init__()
+        self.tau = tau
+    
+    def forward(self, projection, y):
+        """This function generate the loss function based on SupContrast
+
+        Args:
+            projection (_type_): _description_
+            y (_type_): _description_
+        """
+        correlation = (projection @ projection.T) / self.tau
+        _max = torch.max(correlation, dim=1, keepdim=True)[0]
+
+        exp_dot = torch.exp(correlation - _max) + 1e-7
+
+        mask = (y.unsqueeze(1).repeat(1, len(y)) == y).to(projection.device)
+        
+        anchor_out = (1 - torch.eye(len(y))).to(projection.device)
+
+        pij = mask * anchor_out # positives mask
+
+        log_prob = -torch.log(
+            exp_dot / torch.sum(exp_dot * anchor_out, dim=1, keepdim=True)
+        )
+
+        loss_samples = (
+            torch.sum(log_prob * pij, dim=1) / (pij.sum(dim=1) + 1e-7)
+        )
+
+        return loss_samples.mean()
+
+
+    def __str__(self):
+        return 'SupContrastiveLoss'
