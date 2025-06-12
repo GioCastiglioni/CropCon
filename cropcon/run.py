@@ -28,6 +28,7 @@ from cropcon.utils.utils import (
     get_final_model_ckpt_path,
     get_generator,
     seed_worker,
+    LARS
 )
 
 print(f"Available GPUs: {torch.cuda.device_count()}")
@@ -305,6 +306,9 @@ def main(cfg: DictConfig) -> None:
 
         optimizer = instantiate(cfg.optimizer, params=None)
         optimizer = optimizer(params=params)
+
+        if cfg.lars:
+            optimizer = LARS(optimizer)
 
         lr_scheduler = instantiate(
             cfg.lr_scheduler,
