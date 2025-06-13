@@ -130,7 +130,13 @@ def main(cfg: DictConfig) -> None:
                 project=cfg.wandb_project,
                 name=exp_name,
                 config=wandb_cfg,
-                tags=[f"mt{cfg.dataset.multi_temporal}", "ft" if cfg.finetune else "no-ft", str(int(cfg.limited_label_train*100))],
+                tags=[
+                    f"mt{cfg.dataset.multi_temporal}",
+                    "ft" if cfg.finetune else "no-ft",
+                    str(int(cfg.limited_label_train*100)),
+                    f"alpha{cfg.task.trainer.alpha}",
+                    f"tau{cfg.task.trainer.tau}"
+                    ],
             )
             cfg["wandb_run_id"] = wandb.run.id
         OmegaConf.save(cfg, config_log_dir / "config.yaml")
