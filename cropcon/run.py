@@ -134,8 +134,9 @@ def main(cfg: DictConfig) -> None:
                     f"mt{cfg.dataset.multi_temporal}",
                     "ft" if cfg.finetune else "no-ft",
                     str(int(cfg.limited_label_train*100)),
-                    f"alpha{cfg.task.trainer.alpha}",
-                    f"tau{cfg.task.trainer.tau}"
+                    f"alpha{str(cfg.task.trainer.alpha).replace('.', '_')}",
+                    f"tau{str(cfg.task.trainer.tau).replace('.', '_')}",
+                    f"fold{cfg.dataset.fold_config}"
                     ],
             )
             cfg["wandb_run_id"] = wandb.run.id

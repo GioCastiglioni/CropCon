@@ -25,10 +25,11 @@ class Decoder(nn.Module):
         self.num_classes = num_classes
         self.finetune = finetune
 
-class AttentionProjectionHead(nn.Module):
-    def __init__(self, embed_dim, mlp_hidden_dim, projection_dim, num_heads=4):
+class ProjectionHead(nn.Module):
+    def __init__(self, embed_dim, mlp_hidden_dim, projection_dim, attention=False, num_heads=4):
         super().__init__()
-        self.attn = nn.MultiheadAttention(embed_dim, num_heads)
+        if attention: self.attn = nn.MultiheadAttention(embed_dim, num_heads)
+        else: self.attn = None
 
         # MLP projection head
         self.mlp = nn.Sequential(
@@ -38,11 +39,11 @@ class AttentionProjectionHead(nn.Module):
         )
 
     def forward(self, x):
-        # Multihead attention (self-attention)
-        attn_output, _ = self.attn(x, x, x)
-        pooled = attn_output.squeeze(0)  # shape: [batch_size, embed_dim]
+        if self.attn != None:
+            x, _ = self.attn(x, x, x)
+            x = x.squeeze(0)  # shape: [batch_size, embed_dim]
         # Project through MLP
-        projected = self.mlp(pooled)
+        projected = self.mlp(x)
         # Normalize to hypersphere
         normalized = F.normalize(projected, p=2, dim=-1)
         return normalized    

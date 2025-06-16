@@ -80,17 +80,12 @@ class UTAE(Decoder):
 
 
     def forward(self, x, batch_positions=None, return_feats=True):
-        v1 = x["v1"]
-        out = self.forward_features(v1, batch_positions=batch_positions)
-        out = self.out_conv(out)
-
-        if return_feats:
-            v2 = x["v2"]
-            feat_v2 = self.forward_features(v2, batch_positions=batch_positions)
-            return out, feat_v2
+        feat_v = self.forward_features(x, batch_positions=batch_positions)
+        out = self.out_conv(feat_v)
+        if return_feats: return out, feat_v
         else: return out
 
-    def forward_features(self, input: dict[str, torch.Tensor], batch_positions=None) -> torch.Tensor:
+    def forward_features(self, input: torch.Tensor, batch_positions=None) -> torch.Tensor:
 
         input = input.permute(0,2,1,3,4)
 

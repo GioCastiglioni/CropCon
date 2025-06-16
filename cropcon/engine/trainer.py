@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader, Subset
 from cropcon.utils.logger import RunningAverageMeter, sec_to_hm
 from cropcon.utils.losses import SupContrastiveLoss
 from cropcon.utils.utils import RandomChannelDropout, ConsistentTransform
-from cropcon.decoders.base import AttentionProjectionHead
+from cropcon.decoders.base import ProjectionHead
 
 class Trainer:
     def __init__(
@@ -109,11 +109,13 @@ class Trainer:
         self.alpha = alpha
 
         self.contrastive = SupContrastiveLoss(tau=tau)
-        self.projector = AttentionProjectionHead(
+        self.projector = ProjectionHead(
             embed_dim=self.model.module.dec_topology[0],
-            mlp_hidden_dim=128,
-            projection_dim=128
-            ).to(self.device)
+            mlp_hidden_dim=256,
+            projection_dim=128,
+            attention=False).to(self.device)
+
+        self.transform = ConsistentTransform(degrees=30, p=0.5).to(self.device)
     
     def train(self) -> None:
         """Train the model for n_epochs then evaluate the model and save the best model."""
@@ -147,18 +149,17 @@ class Trainer:
         del used_time
         torch.cuda.empty_cache()
 
-    def extract_classwise_representations(self, feature_maps, downsampled_mask):
+    def extract_classwise_representations(self, feature_maps, mask):
         B, C, Hf, Wf = feature_maps.shape
         features = []
         targets = []
 
         for b in range(B):
             fmap = feature_maps[b]           # [C, Hf, Wf]
-            mask = downsampled_mask[b]       # [Hf, Wf]
-            class_ids = torch.unique(mask)
+            class_ids = torch.unique(mask[b])
 
             for cls_id in class_ids:
-                cls_mask = (mask == cls_id)  # [Hf, Wf]
+                cls_mask = (mask[b] == cls_id)  # [Hf, Wf]
                 if cls_mask.sum() == 0:
                     continue  # just in case
 
@@ -168,15 +169,12 @@ class Trainer:
                 pooled_vector = selected_features.mean(dim=1)         # [C]
                 
                 features.append(pooled_vector)
-                targets.append(cls_id)
+                targets.append(cls_id.item())
 
         feature_tensor = torch.stack(features, dim=0)   # [P, C]
-        target_tensor = torch.tensor(targets)           # [P]
+        target_tensor = torch.tensor(targets, device=feature_maps.device)   # [P]
 
         return feature_tensor, target_tensor
-
-    def get_transform(self):
-        return ConsistentTransform(degrees=30, p=0.5)
     
     def temporal_transform(self, x: torch.Tensor, mask: torch.Tensor):
         """
@@ -194,14 +192,12 @@ class Trainer:
 
         for b in range(B):
             x_b = x[b*Temp:(b+1)*Temp]  # [T, C, H, W]
-            x_b, drop_idx = self.channel_drop(x_b)  # same dropout across T
 
-            m_b = mask[b].expand(Temp, H, W)
-            tf = self.get_transform().to(x.device)
-            sample = tf({"image": x_b, "mask": m_b})
+            m_b = mask[b].expand(Temp, H, W).unsqueeze(1)
+            sample = self.transform({"image": x_b, "mask": m_b})
 
             x_b = sample["image"].permute(1, 0, 2, 3)
-            m_b = sample["mask"][0]
+            m_b = sample["mask"][0].squeeze()
 
             x_out[b] = x_b
             mask_out[b] = m_b
@@ -221,31 +217,41 @@ class Trainer:
             image, target = data["image"], data["target"]
             image = {"v1": image["optical"].to(self.device)}
             target = target.to(self.device)
-            image["v2"], target_transformed = image["v1"], target #self.temporal_transform(
-                #image["v1"].detach().clone().requires_grad_(True),
-                #target.detach().clone()
-                #)
+            image["v2"], target_transformed = self.temporal_transform(
+                image["v1"].detach().clone().requires_grad_(True),
+                target.detach().clone()
+                )
 
             self.training_stats["data_time"].update(time.time() - end_time)
 
             with torch.autocast(
                 "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
             ):
-                logits, feat_v2  = self.model(image,
+                logits, feat_v1  = self.model(image["v1"],
                                               batch_positions=data["metadata"],
                                               return_feats=True)
                 loss_ce = self.compute_loss(logits, target)
 
-                feat_con, target_con = self.extract_classwise_representations(
+                feat_con1, target_con1 = self.extract_classwise_representations(
+                    feat_v1,
+                    target.unsqueeze(1).float()
+                    )
+                proj1 = self.projector(feat_con1)
+
+                feat_v2  = self.model.module.forward_features(image["v2"],
+                                              batch_positions=data["metadata"])
+                feat_con2, target_con2 = self.extract_classwise_representations(
                     feat_v2,
                     target_transformed.unsqueeze(1).float()
                     )
+                proj2 = self.projector(feat_con2)
 
-                proj = self.projector(feat_con)
+                proj = torch.cat((proj1, proj2), dim=0)
+                target_con = torch.cat((target_con1, target_con2), dim=0)
 
                 loss_contrastive = self.contrastive(proj, target_con)
 
-                loss = (1-self.alpha)*loss_ce + self.alpha*loss_contrastive
+                loss = loss_ce + self.alpha*loss_contrastive
 
             self.optimizer.zero_grad()
 

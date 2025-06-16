@@ -143,20 +143,16 @@ class RandomChannelDropout(torch.nn.Module):
 class ConsistentTransform(torch.nn.Module):
     def __init__(self, degrees=30, p=0.5):
         super().__init__()
-        self.degrees = degrees
         self.hflip_p = p
         self.vflip_p = p
+        self.degrees = degrees
 
     def forward(self, sample):
         img, mask = sample["image"], sample["mask"]
         # Sample random parameters
-        angle = torch.empty(1).uniform_(-self.degrees, self.degrees).item()
         do_hflip = torch.rand(1).item() < self.hflip_p
         do_vflip = torch.rand(1).item() < self.vflip_p
-
-        # Apply same transform to all frames
-        img = Fv.rotate(img, angle)
-        mask = Fv.rotate(mask, angle)
+        angle = torch.empty(1).uniform_(-self.degrees, self.degrees).item()
 
         if do_hflip:
             img = Fv.hflip(img)
@@ -164,5 +160,9 @@ class ConsistentTransform(torch.nn.Module):
         if do_vflip:
             img = Fv.vflip(img)
             mask = Fv.vflip(mask)
+
+        # Apply same transform to all frames
+        img = Fv.rotate(img, angle)
+        mask = Fv.rotate(mask, angle)
 
         return {"image": img, "mask": mask}

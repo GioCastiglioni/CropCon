@@ -28,6 +28,7 @@ class RawGeoFMDataset(Dataset):
         data_max: dict[str, list[str]],
         download_url: str,
         auto_download: bool,
+        fold_config: int
     ):
         """Initializes the dataset.
 
@@ -57,6 +58,7 @@ class RawGeoFMDataset(Dataset):
             e.g. {"s2": [b1_max, ..., bn_max], "s1": [b1_max, ..., bn_max]}
             download_url (str): url to download the dataset.
             auto_download (bool): whether to download the dataset automatically.
+            fold_config (int): configuration of folds to split the data
         """
         self.split = split
         self.dataset_name = dataset_name
@@ -75,6 +77,7 @@ class RawGeoFMDataset(Dataset):
         self.data_max = data_max
         self.download_url = download_url
         self.auto_download = auto_download
+        self.fold_config = fold_config
 
         if not os.path.exists(self.root_path):
             self.download(self)

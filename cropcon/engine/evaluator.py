@@ -140,7 +140,7 @@ class SegEvaluator(Evaluator):
             image, target = data["image"], data["target"]
             image = {"v1": image["optical"].to(self.device)}
             target = target.to(self.device)
-            logits = model(image, batch_positions=data["metadata"], return_feats=False)
+            logits = model(image["v1"], batch_positions=data["metadata"], return_feats=False)
             
             if logits.shape[1] == 1:
                 pred = (torch.sigmoid(logits) > 0.5).type(torch.int64).squeeze(dim=1)

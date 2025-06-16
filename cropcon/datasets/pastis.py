@@ -84,6 +84,7 @@ class Pastis(RawGeoFMDataset):
         data_max: dict[str, list[str]],
         download_url: str,
         auto_download: bool,
+        fold_config: int
     ):
         """Initialize the PASTIS dataset.
 
@@ -113,6 +114,7 @@ class Pastis(RawGeoFMDataset):
             e.g. {"s2": [b1_max, ..., bn_max], "s1": [b1_max, ..., bn_max]}
             download_url (str): url to download the dataset.
             auto_download (bool): whether to download the dataset automatically.
+            fold_config (int): configuration of folds to split the data
         """
         super(Pastis, self).__init__(
             split=split,
@@ -132,15 +134,24 @@ class Pastis(RawGeoFMDataset):
             data_max=data_max,
             download_url=download_url,
             auto_download=auto_download,
+            fold_config=fold_config
         )
+
+        folds_dict = {
+            "1": {"train": [1,2,3], "val": [4], "test": [5]},
+            "2": {"train": [2,3,4], "val": [5], "test": [1]},
+            "3": {"train": [3,4,5], "val": [1], "test": [2]},
+            "4": {"train": [4,5,1], "val": [2], "test": [3]},
+            "5": {"train": [5,1,2], "val": [3], "test": [4]},
+            }
 
         assert split in ["train", "val", "test"], "Split must be train, val or test"
         if split == "train":
-            folds = [1, 2, 3]
+            folds = folds_dict[str(fold_config)]["train"]
         elif split == "val":
-            folds = [4]
+            folds = folds_dict[str(fold_config)]["val"]
         else:
-            folds = [5]
+            folds = folds_dict[str(fold_config)]["test"]
         self.modalities = ["s2", "aerial", "s1-asc"]
         self.nb_split = 1
 
