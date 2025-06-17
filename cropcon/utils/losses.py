@@ -88,7 +88,7 @@ class FocalLoss(torch.nn.Module):
         return focal_loss.mean()
 
 
-class VICReg(torch.nn.Module):
+class SSL_Loss(torch.nn.Module):
 
     def __init__(self, vic_weights: list[float], inv_loss: str = "mse", ignore_index = None):
         super().__init__()
