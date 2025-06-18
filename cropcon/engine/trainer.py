@@ -18,12 +18,13 @@ from torch.utils.data import DataLoader, Subset
 from cropcon.utils.logger import RunningAverageMeter, sec_to_hm
 from cropcon.utils.losses import SupContrastiveLoss, BCLLoss
 from cropcon.utils.utils import RandomChannelDropout, ConsistentTransform
-from cropcon.decoders.base import ProjectionHead
 
 class Trainer:
     def __init__(
         self,
         model: nn.Module,
+        projector: nn.Module,
+        prototype_projector: nn.Module,
         train_loader: DataLoader,
         criterion: nn.Module,
         distribution: list,
@@ -40,7 +41,8 @@ class Trainer:
         log_interval: int,
         best_metric_key: str,
         tau: float,
-        alpha: float
+        alpha: float,
+        projection_dim: int = 128
     ):
         """Initialize the Trainer.
 
@@ -82,6 +84,7 @@ class Trainer:
         self.eval_interval = eval_interval
         self.log_interval = log_interval
         self.best_metric_key = best_metric_key
+        self.projection_dim=projection_dim
 
         self.training_stats = {
             name: RunningAverageMeter(length=self.batch_per_epoch)
@@ -111,27 +114,17 @@ class Trainer:
         
         self.alpha = alpha
 
-        self.projection_dim = 128
-
         self.contrastive = BCLLoss(tau=tau, cls_num_list=self.distribution)
 
-        self.projector = ProjectionHead(
-            embed_dim=self.model.module.dec_topology[0],
-            mlp_hidden_dim=256,
-            projection_dim=self.projection_dim,
-            attention=False).to(self.device)
+        self.projector = projector
         
-        self.prototype_projector = self.projector = ProjectionHead(
-            embed_dim=self.model.module.dec_topology[0],
-            mlp_hidden_dim=256,
-            projection_dim=self.projection_dim,
-            attention=False).to(self.device)
+        self.prototype_projector = prototype_projector
         
         self.transform = ConsistentTransform(degrees=30, p=0.5).to(self.device)
 
         self.n_classes = self.model.module.num_classes
         
-        self.prototypes = torch.zeros((self.n_classes, self.projection_dim), device=self.device)
+        self.prototypes = torch.zeros((self.n_classes, self.projection_dim), device=self.device).requires_grad_(False)
         self.prototype_initialized = torch.zeros(self.n_classes, dtype=torch.bool, device=self.device)
 
         self.momentum_ema = 0.95
@@ -231,7 +224,7 @@ class Trainer:
         counts = torch.zeros(self.n_classes, device=self.device)
 
         # Sumar todos los vectores por clase
-        for c in torch.unique(target_con1):
+        for c in torch.unique(target_con1).long():
             mask = (target_con1 == c)
             sums[c] = feat_con1[mask].sum(dim=0)
             counts[c] = mask.sum()
@@ -242,7 +235,7 @@ class Trainer:
         # Obtener promedio
         prototypes = sums / counts.unsqueeze(1)
         
-        return prototypes
+        return prototypes.detach()
     
     def train_one_epoch(self, epoch: int) -> None:
         """Train model for one epoch.
@@ -259,15 +252,12 @@ class Trainer:
             image = {"v1": image["optical"].to(self.device)}
             target = target.to(self.device)
 
-            image["v2"], target_transformed2 = self.temporal_transform(
-                image["v1"].detach().clone().requires_grad_(True),
-                target.detach().clone()
-                )
-            
-            image["v3"], target_transformed3 = self.temporal_transform(
-                image["v1"].detach().clone().requires_grad_(True),
-                target.detach().clone()
-                )
+            with torch.no_grad():
+                base_img = image["v1"].detach().clone()
+                image["v2"], target_transformed2 = self.temporal_transform(base_img, target.clone())
+                image["v3"], target_transformed3 = self.temporal_transform(base_img, target.clone())
+                del base_img
+                torch.cuda.empty_cache()
 
             self.training_stats["data_time"].update(time.time() - end_time)
 
@@ -287,28 +277,37 @@ class Trainer:
                 new_prototype = self.compute_class_prototypes(feat_con1, target_con1)
                 new_prototype = self.prototype_projector(new_prototype)
 
-                for cls in torch.unique(target_con1):
-                    if not self.prototype_initialized[cls]:
-                        self.prototypes[cls] = new_prototype[cls]
-                        self.prototype_initialized[cls] = True
-                    else: 
-                        self.prototypes[cls] = self.momentum_ema*self.prototypes[cls] + (1 - self.momentum_ema)*new_prototype[cls]
+                # Update EMA prototypes with detached version
+                with torch.no_grad():
+                    for cls in torch.unique(target_con1).long():
+                        if not self.prototype_initialized[cls]:
+                            self.prototypes[cls] = new_prototype[cls].detach()  # ← detaching here only
+                            self.prototype_initialized[cls] = True
+                        else:
+                            self.prototypes[cls] = (
+                                self.momentum_ema * self.prototypes[cls]
+                                + (1 - self.momentum_ema) * new_prototype[cls].detach()
+                            )
 
-                feat_v2  = self.model.module.forward_features(image["v2"],
-                                              batch_positions=data["metadata"])
+                feats = self.model.module.forward_features(torch.cat((image["v2"],image["v3"]), dim=0),
+                                              batch_positions=data["metadata"].repeat(2, 1))
+
+                feat_v2 = feats[:image["v2"].shape[0]]
                 feat_con2, target_con2 = self.extract_classwise_representations(
                     feat_v2,
                     target_transformed2.unsqueeze(1).float()
                     )
-                proj2 = self.projector(feat_con2)
 
-                feat_v3  = self.model.module.forward_features(image["v3"],
-                                              batch_positions=data["metadata"])
+                feat_v3  = feats[image["v2"].shape[0]:]
                 feat_con3, target_con3 = self.extract_classwise_representations(
                     feat_v3,
                     target_transformed3.unsqueeze(1).float()
                     )
-                proj3 = self.projector(feat_con3)
+
+                projs = self.projector(torch.cat((feat_con2,feat_con3), dim=0))
+
+                proj2 = projs[:image["v2"].shape[0]]
+                proj3 = projs[image["v2"].shape[0]:]
 
                 loss_contrastive = self.contrastive(self.prototypes, proj2, target_con2, proj3, target_con3)
 
@@ -529,8 +528,11 @@ class SegTrainer(Trainer):
     def __init__(
         self,
         model: nn.Module,
+        projector: nn.Module,
+        prototype_projector: nn.Module,
         train_loader: DataLoader,
         criterion: nn.Module,
+        distribution: list,
         optimizer: Optimizer,
         lr_scheduler: LRScheduler,
         evaluator: torch.nn.Module,
@@ -544,13 +546,15 @@ class SegTrainer(Trainer):
         log_interval: int,
         best_metric_key: str,
         tau: float,
-        alpha: float
+        alpha: float,
+        projection_dim: int = 128,
     ):
         """Initialize the Trainer for segmentation task.
         Args:
             model (nn.Module): model to train (encoder + decoder).
             train_loader (DataLoader): train data loader.
             criterion (nn.Module): criterion to compute the loss.
+            distribution (list): class distributions.
             optimizer (Optimizer): optimizer to update the model's parameters.
             lr_scheduler (LRScheduler): lr scheduler to update the learning rate.
             evaluator (torch.nn.Module): task evaluator to evaluate the model.
@@ -566,8 +570,12 @@ class SegTrainer(Trainer):
         """
         super().__init__(
             model=model,
+            projector=projector,
+            prototype_projector=prototype_projector,
+            projection_dim=projection_dim,
             train_loader=train_loader,
             criterion=criterion,
+            distribution=distribution,
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
             evaluator=evaluator,

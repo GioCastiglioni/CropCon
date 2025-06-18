@@ -34,6 +34,7 @@ class UTAE(Decoder):
         num_classes: int,
         finetune: bool,
         dec_topology: list,
+        multi_temporal: int
     ):
         
 
@@ -49,6 +50,7 @@ class UTAE(Decoder):
         self.topology = encoder.topology
         self.in_channels = deepcopy(self.topology)
         self.dec_topology = dec_topology
+        self.multi_temporal = multi_temporal
 
         self.encoder = encoder
 

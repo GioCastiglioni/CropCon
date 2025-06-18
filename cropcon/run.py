@@ -16,6 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from cropcon.datasets.base import GeoFMDataset, GeoFMSubset, RawGeoFMDataset
 from cropcon.decoders.base import Decoder
+from cropcon.decoders.base import ProjectionHead
 from cropcon.encoders.base import Encoder
 from cropcon.engine.evaluator import Evaluator
 from cropcon.engine.trainer import Trainer
@@ -192,6 +193,28 @@ def main(cfg: DictConfig) -> None:
             find_unused_parameters=cfg.finetune,
         )
 
+    projector = torch.nn.parallel.DistributedDataParallel(
+        ProjectionHead(
+            embed_dim=decoder.module.dec_topology[0],
+            mlp_hidden_dim=256,
+            projection_dim=128,
+            attention=False).to(device),
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=False,
+        )            
+        
+    prototype_projector = torch.nn.parallel.DistributedDataParallel(
+        ProjectionHead(
+            embed_dim=decoder.module.dec_topology[0],
+            mlp_hidden_dim=256,
+            projection_dim=128,
+            attention=False).to(device),
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=False,
+        )
+
     logger.info(
             "Built {} for with {} encoder.".format(
                 decoder.module.model_name, type(encoder).__name__
@@ -307,7 +330,10 @@ def main(cfg: DictConfig) -> None:
 
         criterion = instantiate(cfg.criterion)
 
-        params = [{'params': non_encoder_params(decoder.module), 'lr': cfg.optimizer.lr}]
+        params = [
+            {'params': non_encoder_params(decoder.module), 'lr': cfg.optimizer.lr},
+            {'params': prototype_projector.parameters()},
+            {'params': projector.parameters()}]
         if cfg.finetune:
             params.append({'params': decoder.module.encoder.parameters(), 'lr': cfg.optimizer.lr * cfg.ft_rate})
 
@@ -331,6 +357,8 @@ def main(cfg: DictConfig) -> None:
         trainer: Trainer = instantiate(
                 cfg.task.trainer,
                 model=decoder,
+                projector=projector,
+                prototype_projector=prototype_projector,
                 train_loader=train_loader,
                 lr_scheduler=lr_scheduler,
                 optimizer=optimizer,
