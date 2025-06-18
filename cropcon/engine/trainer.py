@@ -26,6 +26,7 @@ class Trainer:
         model: nn.Module,
         train_loader: DataLoader,
         criterion: nn.Module,
+        distribution: list,
         optimizer: Optimizer,
         lr_scheduler: LRScheduler,
         evaluator: torch.nn.Module,
@@ -47,6 +48,7 @@ class Trainer:
             model (nn.Module): model to train (encoder + decoder).
             train_loader (DataLoader): train data loader.
             criterion (nn.Module): criterion to compute the loss.
+            distribution (list): class distributions.
             optimizer (Optimizer): optimizer to update the model's parameters.
             lr_scheduler (LRScheduler): lr scheduler to update the learning rate.
             evaluator (torch.nn.Module): task evaluator to evaluate the model.
@@ -64,6 +66,7 @@ class Trainer:
         """
         self.rank = int(os.environ["RANK"])
         self.criterion = criterion
+        self.distribution=distribution
         self.model = model
         self.train_loader = train_loader
         self.batch_per_epoch = len(self.train_loader)
@@ -110,7 +113,7 @@ class Trainer:
 
         self.projection_dim = 128
 
-        self.contrastive = BCLLoss(temperature=0.1, cls_num_list=None)
+        self.contrastive = BCLLoss(tau=tau, cls_num_list=self.distribution)
 
         self.projector = ProjectionHead(
             embed_dim=self.model.module.dec_topology[0],

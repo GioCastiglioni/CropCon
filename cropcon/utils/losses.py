@@ -274,9 +274,9 @@ class SupContrastiveLoss(torch.nn.Module):
 
 
 class BCLLoss(torch.nn.Module):
-    def __init__(self, temperature=0.1, cls_num_list=None, device='cuda'):
+    def __init__(self, tau=0.1, cls_num_list=None, device='cuda'):
         super().__init__()
-        self.temperature = temperature
+        self.temperature = tau
         self.device = device
         if cls_num_list is not None:
             cls_num = torch.tensor(cls_num_list, dtype=torch.float, device=device)
