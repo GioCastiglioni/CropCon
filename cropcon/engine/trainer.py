@@ -253,11 +253,8 @@ class Trainer:
             target = target.to(self.device)
 
             with torch.no_grad():
-                base_img = image["v1"].detach().clone()
-                image["v2"], target_transformed2 = self.temporal_transform(base_img, target.clone())
-                image["v3"], target_transformed3 = self.temporal_transform(base_img, target.clone())
-                del base_img
-                torch.cuda.empty_cache()
+                image["v2"], target_transformed2 = self.temporal_transform(image["v1"].detach().clone(), target.clone())
+                image["v3"], target_transformed3 = self.temporal_transform(image["v1"].detach().clone(), target.clone())
 
             self.training_stats["data_time"].update(time.time() - end_time)
 
