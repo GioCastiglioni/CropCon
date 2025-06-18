@@ -335,6 +335,7 @@ def main(cfg: DictConfig) -> None:
                 lr_scheduler=lr_scheduler,
                 optimizer=optimizer,
                 criterion=criterion,
+                distribution=cfg.dataset.distribution,
                 evaluator=val_evaluator,
                 exp_dir=exp_dir,
                 device=device,

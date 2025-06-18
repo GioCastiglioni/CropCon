@@ -270,3 +270,34 @@ class SupContrastiveLoss(torch.nn.Module):
 
     def __str__(self):
         return 'SupContrastiveLoss'
+    
+
+
+class BCLLoss(torch.nn.Module):
+    def __init__(self, temperature=0.1, cls_num_list=None, device='cuda'):
+        super().__init__()
+        self.temperature = temperature
+        self.device = device
+        if cls_num_list is not None:
+            cls_num = torch.tensor(cls_num_list, dtype=torch.float, device=device)
+            self.class_weights = 1.0 / cls_num  # inverse frequency
+            self.class_weights = self.class_weights / self.class_weights.sum() * len(cls_num_list)
+        else:
+            self.class_weights = None
+
+    def forward(self, prototypes, proj2, target2, proj3, target3):
+        # Concat views and targets to process jointly
+        features = torch.cat([proj2, proj3], dim=0)  # (N2+N3, feat_dim)
+        targets = torch.cat([target2, target3], dim=0).long()  # (N2+N3,)
+
+        # Compute similarity logits between v2 and v2 to prototype vectors
+        logits = torch.matmul(features, prototypes.T) / self.temperature  # (N_total, n_classes)
+
+        # Apply class-based reweighting to logits (softmax denominator)
+        if self.class_weights is not None:
+            weights = self.class_weights.unsqueeze(0).expand_as(logits)  # (N_total, n_classes)
+            logits = logits - torch.log(weights + 1e-12)  # bias the logits against frequent classes
+
+        loss = F.cross_entropy(logits, targets)
+
+        return loss

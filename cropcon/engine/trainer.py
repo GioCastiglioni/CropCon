@@ -16,7 +16,7 @@ from torch.optim.optimizer import Optimizer
 from torch.utils.data import DataLoader, Subset
 
 from cropcon.utils.logger import RunningAverageMeter, sec_to_hm
-from cropcon.utils.losses import SupContrastiveLoss
+from cropcon.utils.losses import SupContrastiveLoss, BCLLoss
 from cropcon.utils.utils import RandomChannelDropout, ConsistentTransform
 from cropcon.decoders.base import ProjectionHead
 
@@ -108,14 +108,30 @@ class Trainer:
         
         self.alpha = alpha
 
-        self.contrastive = SupContrastiveLoss(tau=tau)
+        self.projection_dim = 128
+
+        self.contrastive = BCLLoss(temperature=0.1, cls_num_list=None)
+
         self.projector = ProjectionHead(
             embed_dim=self.model.module.dec_topology[0],
             mlp_hidden_dim=256,
-            projection_dim=128,
+            projection_dim=self.projection_dim,
             attention=False).to(self.device)
-
+        
+        self.prototype_projector = self.projector = ProjectionHead(
+            embed_dim=self.model.module.dec_topology[0],
+            mlp_hidden_dim=256,
+            projection_dim=self.projection_dim,
+            attention=False).to(self.device)
+        
         self.transform = ConsistentTransform(degrees=30, p=0.5).to(self.device)
+
+        self.n_classes = self.model.module.num_classes
+        
+        self.prototypes = torch.zeros((self.n_classes, self.projection_dim), device=self.device)
+        self.prototype_initialized = torch.zeros(self.n_classes, dtype=torch.bool, device=self.device)
+
+        self.momentum_ema = 0.95
     
     def train(self) -> None:
         """Train the model for n_epochs then evaluate the model and save the best model."""
@@ -204,6 +220,27 @@ class Trainer:
 
         return x_out, mask_out
 
+    def compute_class_prototypes(self, feat_con1, target_con1):
+        D = feat_con1.size(1)
+
+        # Inicializar acumuladores
+        sums = torch.zeros(self.n_classes, D, device=self.device)
+        counts = torch.zeros(self.n_classes, device=self.device)
+
+        # Sumar todos los vectores por clase
+        for c in torch.unique(target_con1):
+            mask = (target_con1 == c)
+            sums[c] = feat_con1[mask].sum(dim=0)
+            counts[c] = mask.sum()
+
+        # Evitar división por cero
+        counts = counts.clamp(min=1)
+
+        # Obtener promedio
+        prototypes = sums / counts.unsqueeze(1)
+        
+        return prototypes
+    
     def train_one_epoch(self, epoch: int) -> None:
         """Train model for one epoch.
 
@@ -214,10 +251,17 @@ class Trainer:
 
         end_time = time.time()
         for batch_idx, data in enumerate(self.train_loader):
+
             image, target = data["image"], data["target"]
             image = {"v1": image["optical"].to(self.device)}
             target = target.to(self.device)
-            image["v2"], target_transformed = self.temporal_transform(
+
+            image["v2"], target_transformed2 = self.temporal_transform(
+                image["v1"].detach().clone().requires_grad_(True),
+                target.detach().clone()
+                )
+            
+            image["v3"], target_transformed3 = self.temporal_transform(
                 image["v1"].detach().clone().requires_grad_(True),
                 target.detach().clone()
                 )
@@ -236,20 +280,34 @@ class Trainer:
                     feat_v1,
                     target.unsqueeze(1).float()
                     )
-                proj1 = self.projector(feat_con1)
+                
+                new_prototype = self.compute_class_prototypes(feat_con1, target_con1)
+                new_prototype = self.prototype_projector(new_prototype)
+
+                for cls in torch.unique(target_con1):
+                    if not self.prototype_initialized[cls]:
+                        self.prototypes[cls] = new_prototype[cls]
+                        self.prototype_initialized[cls] = True
+                    else: 
+                        self.prototypes[cls] = self.momentum_ema*self.prototypes[cls] + (1 - self.momentum_ema)*new_prototype[cls]
 
                 feat_v2  = self.model.module.forward_features(image["v2"],
                                               batch_positions=data["metadata"])
                 feat_con2, target_con2 = self.extract_classwise_representations(
                     feat_v2,
-                    target_transformed.unsqueeze(1).float()
+                    target_transformed2.unsqueeze(1).float()
                     )
                 proj2 = self.projector(feat_con2)
 
-                proj = torch.cat((proj1, proj2), dim=0)
-                target_con = torch.cat((target_con1, target_con2), dim=0)
+                feat_v3  = self.model.module.forward_features(image["v3"],
+                                              batch_positions=data["metadata"])
+                feat_con3, target_con3 = self.extract_classwise_representations(
+                    feat_v3,
+                    target_transformed3.unsqueeze(1).float()
+                    )
+                proj3 = self.projector(feat_con3)
 
-                loss_contrastive = self.contrastive(proj, target_con)
+                loss_contrastive = self.contrastive(self.prototypes, proj2, target_con2, proj3, target_con3)
 
                 loss = loss_ce + self.alpha*loss_contrastive
 
