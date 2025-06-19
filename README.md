@@ -75,3 +75,7 @@ limited_label_train=1.0 \
 limited_label_strategy=stratified \
 task.trainer.n_epochs=80
 ```
+
+### Acknowledgment
+
+This repository builds upon the [PANGAEA Benchmark Repository](https://github.com/VMarsocci/pangaea-bench) by Marsocci, V. et al., incorporating substantial modifications and enhancements. We gratefully acknowledge the foundational contributions of their work, which provided a solid starting point for our development.
