@@ -234,6 +234,46 @@ class Trainer:
         
         return prototypes.detach()
     
+    @torch.no_grad()
+    def update_prototypes_distributed(self, new_prototype, target_con1):
+        world_size = torch.distributed.get_world_size()
+
+        cls_list = torch.unique(target_con1).long()
+        proto_dim = new_prototype.size(1)
+
+        # Prepare containers
+        global_updates = torch.zeros_like(self.prototypes)  # (C, D)
+        counts = torch.zeros(self.n_classes, device=self.device)
+
+        for cls in cls_list:
+            global_updates[cls] = new_prototype[cls].detach()
+            counts[cls] = 1.0
+
+        # Sum across all GPUs
+        torch.distributed.all_reduce(global_updates, op=torch.distributed.ReduceOp.SUM)
+        torch.distributed.all_reduce(counts, op=torch.distributed.ReduceOp.SUM)
+
+        # Compute global averages for the classes that appeared on any GPU
+        valid = counts > 0
+        global_updates[valid] /= counts[valid].unsqueeze(1)
+
+        # Update prototypes with EMA
+        for cls in torch.where(valid)[0]:
+            cls = cls.item()
+            if not self.prototype_initialized[cls]:
+                self.prototypes[cls] = global_updates[cls]
+                self.prototype_initialized[cls] = True
+            else:
+                self.prototypes[cls] = (
+                    self.momentum_ema * self.prototypes[cls]
+                    + (1 - self.momentum_ema) * global_updates[cls]
+                )
+
+        # Sync initialized flags across GPUs
+        proto_flags = self.prototype_initialized.float()
+        torch.distributed.all_reduce(proto_flags, op=torch.distributed.ReduceOp.MAX)
+        self.prototype_initialized = proto_flags.bool()
+    
     def train_one_epoch(self, epoch: int) -> None:
         """Train model for one epoch.
 
@@ -271,19 +311,7 @@ class Trainer:
                 new_prototype = self.compute_class_prototypes(feat_con1, target_con1)
                 new_prototype = self.prototype_projector(new_prototype)
 
-                # Update EMA prototypes with detached version
-                if self.rank == 0:
-                    with torch.no_grad():
-                        for cls in torch.unique(target_con1).long():
-                            if not self.prototype_initialized[cls]:
-                                self.prototypes[cls] = new_prototype[cls].detach()  # ← detaching here only
-                                self.prototype_initialized[cls] = True
-                            else:
-                                self.prototypes[cls] = (
-                                    self.momentum_ema * self.prototypes[cls]
-                                    + (1 - self.momentum_ema) * new_prototype[cls].detach()
-                                )
-                        torch.distributed.broadcast(self.prototypes, src=0)
+                self.update_prototypes_distributed(new_prototype, target_con1)
 
                 feats = self.model.module.forward_features(torch.cat((image["v2"],image["v3"]), dim=0),
                                               batch_positions=data["metadata"].repeat(2, 1))
