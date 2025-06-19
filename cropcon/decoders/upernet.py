@@ -194,21 +194,9 @@ class SegUPerNet(Decoder):
         feats = self.fpn_bottleneck(fpn_outs)
         return feats
 
-    def forward(
+    def forward_fmaps(
         self, img: dict[str, torch.Tensor], output_shape: torch.Size | None = None
     ) -> torch.Tensor:
-        """Compute the segmentation output.
-
-        Args:
-            img (dict[str, torch.Tensor]): input data structured as a dictionary:
-            img = {modality1: tensor1, modality2: tensor2, ...}, e.g. img = {"optical": tensor1, "sar": tensor2}.
-            with tensor1 and tensor2 of shape (B C T=1 H W) with C the number of encoders'bands for the given modality.
-            output_shape (torch.Size | None, optional): output's spatial dims (H, W) (equals to the target spatial dims).
-            Defaults to None.
-
-        Returns:
-            torch.Tensor: output tensor of shape (B, num_classes, H', W') with (H' W') coressponding to the output_shape.
-        """
 
         if type(img) is dict: pass
         else: img = {'optical': img.requires_grad_(True)}
@@ -237,6 +225,27 @@ class SegUPerNet(Decoder):
 
         feat = self.neck(feat)
         feat = self._forward_feature(feat)
+
+        return feat
+    
+    def forward(
+        self, img: dict[str, torch.Tensor], output_shape: torch.Size | None = None
+    ) -> torch.Tensor:
+        """Compute the segmentation output.
+
+        Args:
+            img (dict[str, torch.Tensor]): input data structured as a dictionary:
+            img = {modality1: tensor1, modality2: tensor2, ...}, e.g. img = {"optical": tensor1, "sar": tensor2}.
+            with tensor1 and tensor2 of shape (B C T=1 H W) with C the number of encoders'bands for the given modality.
+            output_shape (torch.Size | None, optional): output's spatial dims (H, W) (equals to the target spatial dims).
+            Defaults to None.
+
+        Returns:
+            torch.Tensor: output tensor of shape (B, num_classes, H', W') with (H' W') coressponding to the output_shape.
+        """
+        
+        self.forward_fmaps(img, output_shape)
+
         feat = self.dropout(feat)
         output = self.conv_seg(feat)
 

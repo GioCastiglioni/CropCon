@@ -16,19 +16,16 @@ And the following **datasets**:
 |:-------------------:|:--------:|:------:|:----:|:-------:|:--------:|
 |        [PASTIS-R](https://arxiv.org/abs/2107.07933)       |    [link](https://huggingface.co/datasets/IGNF/PASTIS-HD)       |   Agriculture     |  Semantic Segmentation    |    S1, S2, SPOT-6  | France   |
 
-The repository supports the following **tasks** using geospatial (foundation) models:
- - [Multi-Temporal Semantic Segmentation](#multi-temporal-semantic-segmentation)
-
 ## 🛠️ Setup
 Clone the repository:
 ```
 git clone https://github.com/GioCastiglioni/CropCon
-cd CropCon
 ```
 
 **Dependencies**
 
 ```
+cd CropCon
 conda env create CropCon python=3.11
 conda activate CropCon
 pip install -r requirements.txt
@@ -51,23 +48,25 @@ export PYTHONPATH=/home/<USERNAME>/CropCon:$PYTHONPATH
 cd /home/<USERNAME>/CropCon
 ```
 ```
-torchrun --nnodes=1 --nproc_per_node=1 cropcon/run.py --config-name=train -m \
+torchrun --nnodes=1 --nproc_per_node=1 --master_port=$MASTER_PORT cropcon/run.py --config-name=train -m \
 dataset=pastis \
-dataset.multi_temporal=35 \
+dataset.multi_temporal=6 \
+task.trainer.tau=0.1 \
+task.trainer.alpha=0.0 \
 encoder=utae_encoder \
 decoder=seg_utae \
-batch_size=12 \
-test_batch_size=12 \
+batch_size=8 \
+test_batch_size=8 \
 preprocessing=seg_resize \
 criterion=cross_entropy \
 optimizer=adamw \
-optimizer.lr=0.0015 \
+optimizer.lr=0.001 \
 ft_rate=1.0 \
 task=segmentation \
 finetune=True \
 from_scratch=True \
 lr_scheduler=multi_step_lr \
-work_dir="/home/<USERNAME>/CropCon/results" \
+work_dir="/home/gcast/CropCon/results" \
 use_wandb=True \
 wandb_project="CropCon" \
 num_workers=4 \
