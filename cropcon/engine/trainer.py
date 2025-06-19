@@ -154,9 +154,6 @@ class Trainer:
         self.training_stats["eval_time"].update(used_time)
         self.save_best_checkpoint(metrics, self.n_epochs)
 
-        # save last model
-        #self.save_model(self.n_epochs, is_final=True)
-
         del metrics
         del used_time
         torch.cuda.empty_cache()
@@ -274,17 +271,31 @@ class Trainer:
                 new_prototype = self.compute_class_prototypes(feat_con1, target_con1)
                 new_prototype = self.prototype_projector(new_prototype)
 
-                # Update EMA prototypes with detached version
+                # Update EMA prototypes
                 with torch.no_grad():
+                    updated = torch.zeros(self.n_classes, device=self.device)
+                    
                     for cls in torch.unique(target_con1).long():
+                        updated[cls] = 1.0
+
                         if not self.prototype_initialized[cls]:
-                            self.prototypes[cls] = new_prototype[cls].detach()  # ← detaching here only
+                            self.prototypes[cls] = new_prototype[cls].detach()
                             self.prototype_initialized[cls] = True
                         else:
                             self.prototypes[cls] = (
                                 self.momentum_ema * self.prototypes[cls]
                                 + (1 - self.momentum_ema) * new_prototype[cls].detach()
                             )
+
+                    # All-reduce across GPUs
+                    torch.distributed.all_reduce(self.prototypes, op=torch.distributed.ReduceOp.SUM)
+                    torch.distributed.all_reduce(updated, op=torch.distributed.ReduceOp.SUM)
+
+                    # Normalize only prototypes that were updated at least once
+                    nonzero = updated > 0
+                    self.prototypes[nonzero] /= updated[nonzero].unsqueeze(1)
+
+                    torch.distributed.all_reduce(self.prototype_initialized, op=torch.distributed.ReduceOp.MAX)
 
                 feats = self.model.module.forward_features(torch.cat((image["v2"],image["v3"]), dim=0),
                                               batch_positions=data["metadata"].repeat(2, 1))
