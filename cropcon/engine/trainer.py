@@ -271,31 +271,19 @@ class Trainer:
                 new_prototype = self.compute_class_prototypes(feat_con1, target_con1)
                 new_prototype = self.prototype_projector(new_prototype)
 
-                # Update EMA prototypes
-                with torch.no_grad():
-                    updated = torch.zeros(self.n_classes, device=self.device)
-                    
-                    for cls in torch.unique(target_con1).long():
-                        updated[cls] = 1.0
-
-                        if not self.prototype_initialized[cls]:
-                            self.prototypes[cls] = new_prototype[cls].detach()
-                            self.prototype_initialized[cls] = True
-                        else:
-                            self.prototypes[cls] = (
-                                self.momentum_ema * self.prototypes[cls]
-                                + (1 - self.momentum_ema) * new_prototype[cls].detach()
-                            )
-
-                    # All-reduce across GPUs
-                    torch.distributed.all_reduce(self.prototypes, op=torch.distributed.ReduceOp.SUM)
-                    torch.distributed.all_reduce(updated, op=torch.distributed.ReduceOp.SUM)
-
-                    # Normalize only prototypes that were updated at least once
-                    nonzero = updated > 0
-                    self.prototypes[nonzero] /= updated[nonzero].unsqueeze(1)
-
-                    torch.distributed.all_reduce(self.prototype_initialized, op=torch.distributed.ReduceOp.MAX)
+                # Update EMA prototypes with detached version
+                if self.rank == 0:
+                    with torch.no_grad():
+                        for cls in torch.unique(target_con1).long():
+                            if not self.prototype_initialized[cls]:
+                                self.prototypes[cls] = new_prototype[cls].detach()  # ← detaching here only
+                                self.prototype_initialized[cls] = True
+                            else:
+                                self.prototypes[cls] = (
+                                    self.momentum_ema * self.prototypes[cls]
+                                    + (1 - self.momentum_ema) * new_prototype[cls].detach()
+                                )
+                        torch.distributed.broadcast(self.prototypes, src=0)
 
                 feats = self.model.module.forward_features(torch.cat((image["v2"],image["v3"]), dim=0),
                                               batch_positions=data["metadata"].repeat(2, 1))
