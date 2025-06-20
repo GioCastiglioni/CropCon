@@ -6,6 +6,8 @@ from torch.optim.optimizer import Optimizer
 import numpy as np
 import torch
 import torchvision.transforms.v2.functional as Fv
+import torch.nn.functional as TF
+from torchvision.transforms import InterpolationMode
 
 
 def seed_worker(worker_id):
@@ -161,8 +163,38 @@ class ConsistentTransform(torch.nn.Module):
             img = Fv.vflip(img)
             mask = Fv.vflip(mask)
 
-        # Apply same transform to all frames
-        img = Fv.rotate(img, angle)
-        mask = Fv.rotate(mask, angle)
+        # Apply same rotation to both, with different interpolation modes
+        img = self.rotate_with_reflection_padding(img, angle, is_mask=False)
+        mask = self.rotate_with_reflection_padding(mask, angle, is_mask=True)
 
         return {"image": img, "mask": mask}
+
+    def rotate_with_reflection_padding(self, img, angle, is_mask=False):
+        """
+        img: Tensor of shape (B, C, H, W) or (C, H, W)
+        angle: float, rotation angle in degrees
+        is_mask: if True, use nearest-neighbor interpolation
+        """
+        is_batched = img.dim() == 4
+        if not is_batched:
+            img = img.unsqueeze(0)
+
+        B, C, H, W = img.shape
+        diag = int((H**2 + W**2) ** 0.5)
+        pad_h = (diag - H) // 2 + 1
+        pad_w = (diag - W) // 2 + 1
+
+        img_padded = TF.pad(img, [pad_w, pad_w, pad_h, pad_h], mode='reflect')
+
+        # Choose interpolation
+        interpolation = InterpolationMode.NEAREST if is_mask else InterpolationMode.BILINEAR
+
+        rotated = torch.stack([
+            Fv.rotate(img_padded[i], angle, interpolation=interpolation)
+            for i in range(B)
+        ])
+        cropped = torch.stack([Fv.center_crop(rotated[i], [H, W]) for i in range(B)])
+
+        if not is_batched:
+            return cropped.squeeze(0)
+        return cropped
