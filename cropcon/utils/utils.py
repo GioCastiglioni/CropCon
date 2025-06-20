@@ -198,3 +198,28 @@ class ConsistentTransform(torch.nn.Module):
         if not is_batched:
             return cropped.squeeze(0)
         return cropped
+    
+    def add_gaussian_noise(self, img, std_ratio=0.02):
+        """
+        Add Gaussian noise to a tensor image (C, H, W) or (B, C, H, W),
+        with noise scaled by the image's dynamic range per channel.
+        
+        Args:
+            img: Tensor image
+            std_ratio: Noise std as a ratio of (max - min) per channel
+        """
+        # Compute min and max per channel (keep dims for broadcasting)
+        dims = (-2, -1)  # spatial dims
+        img_min = img.amin(dim=dims, keepdim=True)
+        img_max = img.amax(dim=dims, keepdim=True)
+        dynamic_range = img_max - img_min + 1e-8  # avoid zero division
+
+        std = std_ratio * dynamic_range
+        noise = torch.randn_like(img) * std
+        noisy_img = img + noise
+        
+        # Clamp per channel using broadcasting (no .item())
+        noisy_img = torch.max(noisy_img, img_min)
+        noisy_img = torch.min(noisy_img, img_max)
+
+        return noisy_img
