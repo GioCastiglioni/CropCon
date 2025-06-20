@@ -167,6 +167,8 @@ class ConsistentTransform(torch.nn.Module):
         img = self.rotate_with_reflection_padding(img, angle, is_mask=False)
         mask = self.rotate_with_reflection_padding(mask, angle, is_mask=True)
 
+        img = self.add_gaussian_noise(img)
+
         return {"image": img, "mask": mask}
 
     def rotate_with_reflection_padding(self, img, angle, is_mask=False):
