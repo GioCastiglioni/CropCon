@@ -68,7 +68,8 @@ class Trainer:
         """
         self.rank = int(os.environ["RANK"])
         self.criterion = criterion
-        self.distribution=distribution
+        self.logit_compensation = str(self.criterion) == "LogitCompensation"
+        self.distribution = distribution
         self.model = model
         self.train_loader = train_loader
         self.batch_per_epoch = len(self.train_loader)
@@ -135,7 +136,7 @@ class Trainer:
         for epoch in range(self.start_epoch, self.n_epochs):
             # train the network for one epoch
             if epoch % self.eval_interval == 0:
-                metrics, used_time = self.evaluator(self.model, f"epoch {epoch}")
+                metrics, used_time = self.evaluator(self.model, f"epoch {epoch}", logit_compensation=self.logit_compensation)
                 self.training_stats["eval_time"].update(used_time)
                 self.save_best_checkpoint(metrics, epoch)
                 del metrics

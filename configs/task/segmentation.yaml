@@ -23,6 +23,7 @@ trainer:
 
 evaluator:
   _target_: cropcon.engine.evaluator.SegEvaluator
+  distribution: ${dataset.distribution}
   # params overwritten in run
   val_loader: null
   exp_dir: null

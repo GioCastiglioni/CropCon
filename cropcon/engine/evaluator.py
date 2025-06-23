@@ -40,6 +40,7 @@ class Evaluator:
     def __init__(
             self,
             val_loader: DataLoader,
+            distribution: list,
             exp_dir: str | Path,
             device: torch.device,
             use_wandb: bool = False,
@@ -58,6 +59,9 @@ class Evaluator:
         self.dataset_name = dataset_name
 
         self.use_wandb = use_wandb
+
+        priors = torch.tensor(distribution, dtype=torch.float32)
+        self.log_priors = torch.log(priors).to(self.device)
 
     def evaluate(
             self,
@@ -100,12 +104,13 @@ class SegEvaluator(Evaluator):
     def __init__(
             self,
             val_loader: DataLoader,
+            distribution: list,
             exp_dir: str | Path,
             device: torch.device,
             use_wandb: bool = False,
             dataset_name: str = 'PASTIS-HD'
     ):
-        super().__init__(val_loader, exp_dir, device, use_wandb, dataset_name)
+        super().__init__(val_loader, distribution, exp_dir, device, use_wandb, dataset_name)
 
     def reshape_transform(self, tensor, height=15, width=15):
         # Reshape (batch, seq_len, embed_dim) -> (batch, embed_dim, height, width)
@@ -117,7 +122,7 @@ class SegEvaluator(Evaluator):
         return result
 
     @torch.no_grad()
-    def evaluate(self, model, model_name='model', model_ckpt_path=None):
+    def evaluate(self, model, model_name='model', model_ckpt_path=None, logit_compensation=False):
         t = time.time()
 
         if model_ckpt_path is not None:
@@ -142,6 +147,7 @@ class SegEvaluator(Evaluator):
             target = target.to(self.device)
             logits = model(image["v1"], batch_positions=data["metadata"], return_feats=False)
             
+            if logit_compensation: logits += self.log_priors.view(1, -1, 1, 1)
             if logits.shape[1] == 1:
                 pred = (torch.sigmoid(logits) > 0.5).type(torch.int64).squeeze(dim=1)
             else:
@@ -158,7 +164,7 @@ class SegEvaluator(Evaluator):
         torch.distributed.all_reduce(
             confusion_matrix, op=torch.distributed.ReduceOp.SUM
         )
-        print(confusion_matrix.cpu())
+        #print(confusion_matrix.cpu())
         metrics = self.compute_metrics(confusion_matrix.cpu())
         self.log_metrics(metrics)
 
@@ -167,8 +173,8 @@ class SegEvaluator(Evaluator):
         return metrics, used_time
 
     @torch.no_grad()
-    def __call__(self, model, model_name, model_ckpt_path=None):
-        return self.evaluate(model, model_name, model_ckpt_path)
+    def __call__(self, model, model_name, model_ckpt_path=None, logit_compensation=False):
+        return self.evaluate(model, model_name, model_ckpt_path, logit_compensation)
 
     def compute_metrics(self, confusion_matrix):
         # Calculate IoU for each class
