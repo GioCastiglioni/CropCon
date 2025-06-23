@@ -114,7 +114,7 @@ class Trainer:
         
         self.alpha = alpha
 
-        self.contrastive = BCLLoss(tau=tau, cls_num_list=self.distribution)
+        self.contrastive = BCLLoss(tau=tau, ignore_index=self.criterion.ignore_index)
 
         self.projector = projector
         
@@ -261,13 +261,14 @@ class Trainer:
         for cls in torch.where(valid)[0]:
             cls = cls.item()
             if not self.prototype_initialized[cls]:
-                self.prototypes[cls] = global_updates[cls]
+                self.prototypes[cls] = F.normalize(global_updates[cls], dim=0)
                 self.prototype_initialized[cls] = True
             else:
-                self.prototypes[cls] = (
+                updated = (
                     self.momentum_ema * self.prototypes[cls]
                     + (1 - self.momentum_ema) * global_updates[cls]
                 )
+                self.prototypes[cls] = F.normalize(updated, dim=0)
 
         # Sync initialized flags across GPUs
         proto_flags = self.prototype_initialized.float()
@@ -309,7 +310,7 @@ class Trainer:
                     )
                 
                 new_prototype = self.compute_class_prototypes(feat_con1, target_con1)
-                new_prototype = self.prototype_projector(new_prototype)
+                new_prototype = F.normalize(self.prototype_projector(new_prototype), dim=1)
 
                 self.update_prototypes_distributed(new_prototype, target_con1)
 
