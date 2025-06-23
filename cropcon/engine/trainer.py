@@ -120,7 +120,7 @@ class Trainer:
         
         self.prototype_projector = prototype_projector
         
-        self.transform = ConsistentTransform(degrees=30, p=0.5).to(self.device)
+        self.transform = ConsistentTransform(degrees=45, p=0.5).to(self.device)
 
         self.n_classes = self.model.module.num_classes
         
