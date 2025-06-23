@@ -33,7 +33,7 @@ pip install -r requirements.txt
 
 ## 🏋️ Training
 
-To run experiments, please refer to `configs/train.yaml`. In it, in addition to some basic info about training (e.g. `finetune` for fine-tuning the encoder, `limited_label_train` to train the model on a stratified subset of labels, `num_workers`, `batch_size` and so on), there are different configs. We provide examples of command lines to initialize a training task on a single GPU.
+To run experiments, please refer to `configs/train.yaml`. In it, in addition to some basic info about training (e.g. `finetune` for fine-tuning the encoder, `limited_label_train` to train the model on a stratified subset of labels, `num_workers`, `batch_size` and so on), there are different configs. We provide an example of command lines to initialize a training task on a single GPU.
 
 Please note:
  - The repo adopts [hydra](https://github.com/facebookresearch/hydra), so you can easily log your experiments and overwrite parameters from the command line. More examples are provided later.
@@ -46,19 +46,20 @@ source "$HOME/miniconda3/etc/profile.d/conda.sh"
 conda activate CropCon
 export PYTHONPATH=/home/<USERNAME>/CropCon:$PYTHONPATH
 cd /home/<USERNAME>/CropCon
-```
-```
+
 torchrun --nnodes=1 --nproc_per_node=1 --master_port=$MASTER_PORT cropcon/run.py --config-name=train -m \
 dataset=pastis \
 dataset.multi_temporal=6 \
+dataset.fold_config=1 \
 task.trainer.tau=0.1 \
 task.trainer.alpha=0.0 \
 encoder=utae_encoder \
 decoder=seg_utae \
-batch_size=8 \
-test_batch_size=8 \
+batch_size=12 \
+test_batch_size=12 \
 preprocessing=seg_resize \
 criterion=cross_entropy \
+lars=false \
 optimizer=adamw \
 optimizer.lr=0.001 \
 ft_rate=1.0 \
@@ -66,7 +67,7 @@ task=segmentation \
 finetune=True \
 from_scratch=True \
 lr_scheduler=multi_step_lr \
-work_dir="/home/gcast/CropCon/results" \
+work_dir="/home/<USERNAME>/CropCon/results" \
 use_wandb=True \
 wandb_project="CropCon" \
 num_workers=4 \
@@ -78,4 +79,4 @@ task.trainer.n_epochs=80
 
 ### Acknowledgment
 
-This repository builds upon the [PANGAEA Benchmark Repository](https://github.com/VMarsocci/pangaea-bench) by Marsocci, V. et al., incorporating substantial modifications and enhancements. We gratefully acknowledge the foundational contributions of their work, which provided a solid starting point for our development.
+This repository builds upon the [PANGAEA Benchmark Repository](https://github.com/VMarsocci/pangaea-bench) by Marsocci, V. et al., incorporating substantial modifications. We gratefully acknowledge the foundational contributions of their work, which provided a solid starting point for our development.
