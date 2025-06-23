@@ -127,7 +127,7 @@ class Trainer:
         self.prototypes = torch.zeros((self.n_classes, self.projection_dim), device=self.device).requires_grad_(False)
         self.prototype_initialized = torch.zeros(self.n_classes, dtype=torch.bool, device=self.device)
 
-        self.momentum_ema = 0.95
+        self.momentum_ema = lambda epoch: min(0.9, 0.7 + 0.04 * epoch)
     
     def train(self) -> None:
         """Train the model for n_epochs then evaluate the model and save the best model."""
@@ -235,7 +235,7 @@ class Trainer:
         return prototypes.detach()
     
     @torch.no_grad()
-    def update_prototypes_distributed(self, new_prototype, target_con1):
+    def update_prototypes_distributed(self, new_prototype, target_con1, epoch):
         world_size = torch.distributed.get_world_size()
 
         cls_list = torch.unique(target_con1).long()
@@ -265,8 +265,8 @@ class Trainer:
                 self.prototype_initialized[cls] = True
             else:
                 updated = (
-                    self.momentum_ema * self.prototypes[cls]
-                    + (1 - self.momentum_ema) * global_updates[cls]
+                    self.momentum_ema(epoch) * self.prototypes[cls]
+                    + (1 - self.momentum_ema(epoch)) * global_updates[cls]
                 )
                 self.prototypes[cls] = F.normalize(updated, dim=0)
 
@@ -312,7 +312,7 @@ class Trainer:
                 new_prototype = self.compute_class_prototypes(feat_con1, target_con1)
                 new_prototype = F.normalize(self.prototype_projector(new_prototype), dim=1)
 
-                self.update_prototypes_distributed(new_prototype, target_con1)
+                self.update_prototypes_distributed(new_prototype, target_con1, epoch)
 
                 feats = self.model.module.forward_features(torch.cat((image["v2"],image["v3"]), dim=0),
                                               batch_positions=data["metadata"].repeat(2, 1))
