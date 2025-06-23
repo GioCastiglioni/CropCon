@@ -272,7 +272,7 @@ class SupContrastiveLoss(torch.nn.Module):
         return 'SupContrastiveLoss'
     
 
-class LogitCompensation(nn.Module): 
+class LogitCompensation(torch.nn.Module): 
     def __init__(self, distribution, ignore_index=-1, device="cuda"):
         super().__init__()
         priors = torch.tensor(distribution, dtype=torch.float32)
@@ -299,52 +299,61 @@ class LogitCompensation(nn.Module):
 
 
 class BCLLoss(torch.nn.Module):
-    def __init__(self, tau=0.1, device='cuda'):
+    def __init__(self, tau=0.1, ignore_index=-1, device='cuda'):
         super().__init__()
         self.temperature = tau
+        self.ignore_index = ignore_index
         self.device = device
 
     def forward(self, protos, proj2, target2, proj3, target3):
-        # Concat views and targets to process jointly
-        region_labels = torch.cat([target2, target3], dim=0).long()  # [M]
+        # Concat features and targets
+        feats = F.normalize(torch.cat([proj2, proj3], dim=0), dim=1)         # [M, D]
+        region_labels = torch.cat([target2, target3], dim=0).long()          # [M]
+        protos = F.normalize(protos, dim=1)                                   # [C, D]
 
-        feats = F.normalize(torch.cat([proj2, proj3], dim=0), dim=1)    # [M, D]
-        protos = F.normalize(protos, dim=1)    # [C, D]
-
+        # Mask out ignored labels
+        valid_mask = (region_labels != self.ignore_index)
+        feats = feats[valid_mask]
+        region_labels = region_labels[valid_mask]
         M = feats.shape[0]
 
+        if M == 0:
+            return torch.tensor(0.0, device=self.device, requires_grad=True)
+
+        C = protos.size(0)
         loss = 0.0
         for i in range(M):
             yi = region_labels[i].item()
-            zi = feats[i]                         # [D] normalized embedding
-            # Gather positives: other regions of class yi plus the prototype of yi
-            same_mask = (region_labels == yi)
-            same_idx = torch.where(same_mask)[0]
-            other_idx = same_idx[same_idx != i]   # indices of other regions (if any)
+            zi = feats[i]  # [D]
+
+            # Positive set: same class (excluding self) + prototype
+            same_idx = torch.where(region_labels == yi)[0]
+            other_idx = same_idx[same_idx != i]
             pos_feats = []
+
             if other_idx.numel() > 0:
-                pos_feats.append(feats[other_idx])       # [n_pos, D]
-            pos_feats.append(protos[yi].unsqueeze(0))    # [1, D] (class prototype)
-            pos_feats = torch.cat(pos_feats, dim=0)     # [n_pos+1, D]
-            # Numerator: sum of exp(similarity/temperature) over positives
-            sim_pos = torch.exp(torch.matmul(pos_feats, zi) / self.temperature)  # [n_pos+1]
+                pos_feats.append(feats[other_idx])  # [n_pos, D]
+
+            pos_feats.append(protos[yi].unsqueeze(0))  # [1, D]
+            pos_feats = torch.cat(pos_feats, dim=0)    # [n_pos + 1, D]
+
+            sim_pos = torch.exp(torch.matmul(pos_feats, zi) / self.temperature)
             numer = sim_pos.sum()
-            # Denominator: sum over each class j (samples + prototype)
+
             denom = 0.0
-            C = protos.shape[0]
             for c in range(C):
-                mask_c = (region_labels == c)
-                idx_c = torch.where(mask_c)[0]
-                if idx_c.numel() > 0:
-                    feats_c = feats[idx_c]                # [n_c, D]
-                    sim_c = torch.exp(torch.matmul(feats_c, zi) / self.temperature).sum()
+                class_idx = torch.where(region_labels == c)[0]
+                if class_idx.numel() > 0:
+                    feats_c = feats[class_idx]  # [n_c, D]
+                    sim_feats = torch.exp(torch.matmul(feats_c, zi) / self.temperature).sum()
                 else:
-                    sim_c = torch.tensor(0.0, device=self.device)
-                # include prototype for class c
+                    sim_feats = 0.0
+
                 sim_proto = torch.exp(torch.matmul(protos[c].unsqueeze(0), zi) / self.temperature).sum()
-                sim_c += sim_proto
-                denom += sim_c / (idx_c.numel() + 1)
-            loss_i = -torch.log(numer / denom)
-            loss += loss_i / (pos_feats.size(0))   # average over positives count
-        loss = loss / M
-        return loss
+                class_den = sim_feats + sim_proto
+                denom += class_den / (class_idx.numel() + 1)
+
+            loss_i = -torch.log(numer / denom + 1e-12)  # stability
+            loss += loss_i / pos_feats.size(0)
+
+        return loss / M
