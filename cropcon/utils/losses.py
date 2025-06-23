@@ -17,6 +17,9 @@ class WeightedCrossEntropy(torch.nn.Module):
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         # Compute the weighted cross-entropy loss
         return self.loss(logits, target)
+    
+    def __str__(self):
+        return 'WeightedCrossEntropy'
 
 
 class DICELoss(torch.nn.Module):
@@ -57,6 +60,9 @@ class DICELoss(torch.nn.Module):
 
         return dice_loss
 
+    def __str__(self):
+        return 'DICELoss'
+
 
 class FocalLoss(torch.nn.Module):
     def __init__(self, ignore_index: int, distribution: list[float], gamma: float = 2.0) -> None:
@@ -86,151 +92,9 @@ class FocalLoss(torch.nn.Module):
         
         # Return the mean loss over the batch
         return focal_loss.mean()
-
-
-class SSL_Loss(torch.nn.Module):
-
-    def __init__(self, vic_weights: list[float], inv_loss: str = "mse", ignore_index = None):
-        super().__init__()
-
-        self.variance_loss_epsilon = 1e-08
-        
-        self.variance_loss_weight = vic_weights[0]
-        self.invariance_loss_weight = vic_weights[1]
-        self.covariance_loss_weight = vic_weights[2]
-
-        if inv_loss == "mse":
-            self.inv = torch.nn.MSELoss()
-        elif inv_loss == "cca":
-            self.inv = CCALoss()
-        elif inv_loss == "ntxent":
-            self.inv = NTXentLoss()
-
-    def forward(self, z_a, z_b, each_comp=False):
-
-        loss_inv = self.inv(z_a, z_b)
-
-        std_z_a = torch.sqrt(
-            z_a.var(dim=0) + self.variance_loss_epsilon
-        )
-        std_z_b = torch.sqrt(
-            z_b.var(dim=0) + self.variance_loss_epsilon
-        )
-        loss_v_a = torch.mean(F.relu(1 - std_z_a))
-        loss_v_b = torch.mean(F.relu(1 - std_z_b))
-        loss_var = loss_v_a + loss_v_b
-
-        N, D = z_a.shape
-
-        z_a = z_a - z_a.mean(dim=0)
-        z_b = z_b - z_b.mean(dim=0)
-
-        cov_z_a = ((z_a.T @ z_a) / (N - 1)).square()  # DxD
-        cov_z_b = ((z_b.T @ z_b) / (N - 1)).square()  # DxD
-        loss_c_a = (cov_z_a.sum() - cov_z_a.diagonal().sum()) / D
-        loss_c_b = (cov_z_b.sum() - cov_z_b.diagonal().sum()) / D
-        loss_cov = loss_c_a + loss_c_b
-
-        
-        weighted_var = loss_var * self.variance_loss_weight
-        weighted_cov = loss_cov * self.covariance_loss_weight
-
-        weighted_inv = loss_inv * self.invariance_loss_weight
-
-        loss = weighted_inv + weighted_var + weighted_cov
-        if each_comp: return loss.mean(), loss_var, loss_inv, loss_cov
-        else: return loss.mean()
-
-
-class NTXentLoss(torch.nn.Module):
-    def __init__(self, temperature=0.1):
-        super(NTXentLoss, self).__init__()
-        self.temperature = temperature
-
-    def forward(self, logits_1, logits_2):
-        """
-        :param logits_1: Tensor of shape (batch_size, feature_dim)
-        :param logits_2: Tensor of shape (batch_size, feature_dim)
-        :return: NT-Xent loss
-        """
-        batch_size = logits_1.shape[0]
-
-        # Normalize logits
-        logits_1 = F.normalize(logits_1, p=2, dim=1)
-        logits_2 = F.normalize(logits_2, p=2, dim=1)
-
-        # Compute similarity between all pairs (batch_size x batch_size)
-        logits = torch.matmul(logits_1, logits_2.T) / self.temperature
-
-        # Extract positive pairs (batch_size, 1)
-        positive_logits = torch.diag(logits)
-
-        # Remove diagonal elements from logits (mask self-comparisons)
-        mask = torch.eye(batch_size, dtype=torch.bool).to(logits.device)
-        logits = logits[~mask].view(batch_size, -1)  # Remove the diagonal and reshape
-
-        # Concatenate the positive logits with the remaining logits
-        logits = torch.cat([positive_logits.unsqueeze(1), logits], dim=1)
-
-        # Labels are always 0 (first column has the positive pair)
-        labels = torch.zeros(batch_size, dtype=torch.long).to(logits.device)
-
-        # Compute cross-entropy loss
-        loss = F.cross_entropy(logits, labels)
-
-        return loss
-
-
-class CCALoss(torch.nn.Module):
-    def __init__(self, epsilon=1e-4):
-        """
-        Canonical Correlation Analysis (CCA) Loss.
-        
-        Args:
-            epsilon (float): Small constant for numerical stability.
-        """
-        super(CCALoss, self).__init__()
-        self.epsilon = epsilon
-
-    import torch
-
-    def forward(self, H1, H2):
-        """
-        Canonical Correlation Analysis (CCA) Loss with regularization for small batch sizes.
-
-        Args:
-            H1: (batch_size, feature_dim) Tensor for view 1.
-            H2: (batch_size, feature_dim) Tensor for view 2.
-            reg: Regularization coefficient.
-
-        Returns:
-            -cca_loss: Negative correlation between the views.
-        """
-        batch_size = H1.shape[0]
-
-        # Compute covariance matrices
-        H1_mean = H1 - H1.mean(dim=0, keepdim=True)
-        H2_mean = H2 - H2.mean(dim=0, keepdim=True)
-
-        Sigma_11 = (H1_mean.T @ H1_mean) / (batch_size - 1) + self.epsilon * torch.eye(H1.shape[1], device=H1.device)
-        Sigma_22 = (H2_mean.T @ H2_mean) / (batch_size - 1) + self.epsilon * torch.eye(H2.shape[1], device=H2.device)
-        Sigma_12 = (H1_mean.T @ H2_mean) / (batch_size - 1)
-
-        # Compute square root inverse using SVD (stable alternative to Cholesky)
-        U1, S1, V1 = torch.linalg.svd(Sigma_11)
-        Sigma_11_inv_sqrt = U1 @ torch.diag(1.0 / torch.sqrt(S1)) @ V1.T
-
-        U2, S2, V2 = torch.linalg.svd(Sigma_22)
-        Sigma_22_inv_sqrt = U2 @ torch.diag(1.0 / torch.sqrt(S2)) @ V2.T
-
-        # Compute correlation matrix
-        C = Sigma_11_inv_sqrt @ Sigma_12 @ Sigma_22_inv_sqrt
-
-        # Maximize sum of singular values (canonical correlations)
-        cca_corr = torch.linalg.svdvals(C)
-        loss = -cca_corr.sum()  # Negative because we want to maximize correlation
-
-        return loss
+    
+    def __str__(self):
+        return 'FocalLoss'
 
 
 class SupContrastiveLoss(torch.nn.Module):
@@ -267,7 +131,6 @@ class SupContrastiveLoss(torch.nn.Module):
 
         return loss_samples.mean()
 
-
     def __str__(self):
         return 'SupContrastiveLoss'
     
@@ -296,6 +159,9 @@ class LogitCompensation(torch.nn.Module):
             reduction='mean',
             ignore_index=self.ignore_index
         )
+
+    def __str__(self):
+        return 'LogitCompensation'
 
 
 class BCLLoss(torch.nn.Module):
@@ -356,3 +222,6 @@ class BCLLoss(torch.nn.Module):
         # Final loss
         loss = -torch.log((numer / (denom + 1e-12)))                         # [M]
         return loss.mean()
+
+    def __str__(self):
+        return 'BCLLoss'
