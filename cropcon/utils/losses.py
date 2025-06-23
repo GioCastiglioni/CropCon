@@ -306,54 +306,53 @@ class BCLLoss(torch.nn.Module):
         self.device = device
 
     def forward(self, protos, proj2, target2, proj3, target3):
-        # Concat features and targets
+        # Combine projections and labels
         feats = F.normalize(torch.cat([proj2, proj3], dim=0), dim=1)         # [M, D]
-        region_labels = torch.cat([target2, target3], dim=0).long()          # [M]
+        labels = torch.cat([target2, target3], dim=0).long()                 # [M]
         protos = F.normalize(protos, dim=1)                                   # [C, D]
 
-        # Mask out ignored labels
-        valid_mask = (region_labels != self.ignore_index)
+        # Remove ignored labels
+        valid_mask = labels != self.ignore_index
         feats = feats[valid_mask]
-        region_labels = region_labels[valid_mask]
-        M = feats.shape[0]
+        labels = labels[valid_mask]
 
+        M, D = feats.shape
         if M == 0:
             return torch.tensor(0.0, device=self.device, requires_grad=True)
 
         C = protos.size(0)
-        loss = 0.0
-        for i in range(M):
-            yi = region_labels[i].item()
-            zi = feats[i]  # [D]
 
-            # Positive set: same class (excluding self) + prototype
-            same_idx = torch.where(region_labels == yi)[0]
-            other_idx = same_idx[same_idx != i]
-            pos_feats = []
+        # === Compute pairwise similarities ===
+        sim_matrix = torch.matmul(feats, feats.T) / self.temperature          # [M, M]
+        proto_sim = torch.matmul(feats, protos.T) / self.temperature          # [M, C]
 
-            if other_idx.numel() > 0:
-                pos_feats.append(feats[other_idx])  # [n_pos, D]
+        # Mask self-similarity
+        eye = torch.eye(M, device=feats.device).bool()
+        sim_matrix.masked_fill_(eye, -float("inf"))
 
-            pos_feats.append(protos[yi].unsqueeze(0))  # [1, D]
-            pos_feats = torch.cat(pos_feats, dim=0)    # [n_pos + 1, D]
+        # Build class-equality mask
+        label_matrix = labels.unsqueeze(1).expand(-1, M)                      # [M, M]
+        match_matrix = label_matrix == label_matrix.T                        # [M, M]
 
-            sim_pos = torch.exp(torch.matmul(pos_feats, zi) / self.temperature)
-            numer = sim_pos.sum()
+        # Numerator: sum over same-class regions (excluding self) + class prototype
+        numer_region = torch.exp(sim_matrix) * match_matrix                  # [M, M]
+        numer_proto = torch.exp(torch.gather(proto_sim, 1, labels.view(-1,1)))  # [M, 1]
+        numer = numer_region.sum(dim=1) + numer_proto.squeeze(1)             # [M]
 
-            denom = 0.0
-            for c in range(C):
-                class_idx = torch.where(region_labels == c)[0]
-                if class_idx.numel() > 0:
-                    feats_c = feats[class_idx]  # [n_c, D]
-                    sim_feats = torch.exp(torch.matmul(feats_c, zi) / self.temperature).sum()
-                else:
-                    sim_feats = 0.0
+        # Denominator: average over each class (sample + prototype)
+        denom = torch.zeros_like(numer)
 
-                sim_proto = torch.exp(torch.matmul(protos[c].unsqueeze(0), zi) / self.temperature).sum()
-                class_den = sim_feats + sim_proto
-                denom += class_den / (class_idx.numel() + 1)
+        for c in range(C):
+            class_mask = (labels == c)                                       # [M]
+            count = class_mask.sum()
+            if count == 0:
+                continue
 
-            loss_i = -torch.log(numer / denom + 1e-12)  # stability
-            loss += loss_i / pos_feats.size(0)
+            feats_c = feats[class_mask]                                      # [Nc, D]
+            sim_feats = torch.exp(torch.matmul(feats, feats_c.T) / self.temperature).sum(dim=1)  # [M]
+            sim_proto = torch.exp(proto_sim[:, c])                           # [M]
+            denom += (sim_feats + sim_proto) / (count + 1)
 
-        return loss / M
+        # Final loss
+        loss = -torch.log((numer / (denom + 1e-12)))                         # [M]
+        return loss.mean()
