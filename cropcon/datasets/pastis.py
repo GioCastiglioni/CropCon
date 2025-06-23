@@ -89,7 +89,7 @@ class Pastis(RawGeoFMDataset):
         """Initialize the PASTIS dataset.
 
         Args:
-            split (str): split of the dataset (train, val, test).
+            split (str): split of the dataset (train, val).
             dataset_name (str): dataset name.
             multi_modal (bool): if the dataset is multi-modal.
             multi_temporal (int): number of temporal frames.
@@ -138,20 +138,21 @@ class Pastis(RawGeoFMDataset):
         )
 
         folds_dict = {
-            "1": {"train": [1,2,3,4], "val": [5], "test": [5]},
-            "2": {"train": [2,3,4,5], "val": [1], "test": [1]},
-            "3": {"train": [3,4,5,1], "val": [2], "test": [2]},
-            "4": {"train": [4,5,1,2], "val": [3], "test": [3]},
-            "5": {"train": [5,1,2,3], "val": [4], "test": [4]},
+            "1": {"train": [1,2,3,4], "val": [5]},
+            "2": {"train": [2,3,4,5], "val": [1]},
+            "3": {"train": [3,4,5,1], "val": [2]},
+            "4": {"train": [4,5,1,2], "val": [3]},
+            "5": {"train": [5,1,2,3], "val": [4]},
             }
 
-        assert split in ["train", "val", "test"], "Split must be train, val or test"
+        assert split in ["train", "val"], "Split must be train or val"
         if split == "train":
             folds = folds_dict[str(fold_config)]["train"]
         elif split == "val":
             folds = folds_dict[str(fold_config)]["val"]
         else:
-            folds = folds_dict[str(fold_config)]["test"]
+            raise Exception("Split not supported. Try 'train' or 'val'.")
+            
         self.modalities = ["s2", "aerial", "s1-asc"]
         self.nb_split = 1
 

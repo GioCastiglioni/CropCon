@@ -304,39 +304,40 @@ class Trainer:
                                               batch_positions=data["metadata"],
                                               return_feats=True)
                 loss_ce = self.compute_loss(logits, target)
+                if self.alpha > 0.0: 
+                    feat_con1, target_con1 = self.extract_classwise_representations(
+                        feat_v1,
+                        target.unsqueeze(1).float()
+                        )
+                    
+                    new_prototype = self.compute_class_prototypes(feat_con1, target_con1)
+                    new_prototype = F.normalize(self.prototype_projector(new_prototype), dim=1)
 
-                feat_con1, target_con1 = self.extract_classwise_representations(
-                    feat_v1,
-                    target.unsqueeze(1).float()
-                    )
-                
-                new_prototype = self.compute_class_prototypes(feat_con1, target_con1)
-                new_prototype = F.normalize(self.prototype_projector(new_prototype), dim=1)
+                    self.update_prototypes_distributed(new_prototype, target_con1, epoch)
 
-                self.update_prototypes_distributed(new_prototype, target_con1, epoch)
+                    feats = self.model.module.forward_features(torch.cat((image["v2"],image["v3"]), dim=0),
+                                                batch_positions=data["metadata"].repeat(2, 1))
 
-                feats = self.model.module.forward_features(torch.cat((image["v2"],image["v3"]), dim=0),
-                                              batch_positions=data["metadata"].repeat(2, 1))
+                    feat_v2 = feats[:image["v2"].shape[0]]
+                    feat_con2, target_con2 = self.extract_classwise_representations(
+                        feat_v2,
+                        target_transformed2.unsqueeze(1).float()
+                        )
 
-                feat_v2 = feats[:image["v2"].shape[0]]
-                feat_con2, target_con2 = self.extract_classwise_representations(
-                    feat_v2,
-                    target_transformed2.unsqueeze(1).float()
-                    )
+                    feat_v3  = feats[image["v2"].shape[0]:]
+                    feat_con3, target_con3 = self.extract_classwise_representations(
+                        feat_v3,
+                        target_transformed3.unsqueeze(1).float()
+                        )
 
-                feat_v3  = feats[image["v2"].shape[0]:]
-                feat_con3, target_con3 = self.extract_classwise_representations(
-                    feat_v3,
-                    target_transformed3.unsqueeze(1).float()
-                    )
+                    projs = self.projector(torch.cat((feat_con2,feat_con3), dim=0))
 
-                projs = self.projector(torch.cat((feat_con2,feat_con3), dim=0))
+                    proj2 = projs[:image["v2"].shape[0]]
+                    proj3 = projs[image["v2"].shape[0]:]
 
-                proj2 = projs[:image["v2"].shape[0]]
-                proj3 = projs[image["v2"].shape[0]:]
+                    loss_contrastive = self.contrastive(self.prototypes, proj2, target_con2, proj3, target_con3)
 
-                loss_contrastive = self.contrastive(self.prototypes, proj2, target_con2, proj3, target_con3)
-
+                else: loss_contrastive = 0.0
                 loss = loss_ce + self.alpha*loss_contrastive
 
             self.optimizer.zero_grad()
@@ -471,6 +472,9 @@ class Trainer:
         if self.best_metric_comp(curr_metric, self.best_metric):
             self.best_metric = curr_metric
             best_ckpt = self.get_checkpoint(epoch)
+            best_ckpt["mIoU"] = eval_metrics["mIoU"]
+            best_ckpt["mF1"] = eval_metrics["mF1"]
+            best_ckpt["mAcc"] = eval_metrics["mAcc"]
             self.save_model(
                 epoch, is_best=True, checkpoint=best_ckpt
             )

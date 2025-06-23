@@ -19,7 +19,7 @@ class Evaluator:
         use_wandb (bool): Flag to indicate if Weights and Biases (wandb) is used for logging.
         logger (logging.Logger): Logger for logging information.
         classes (list): List of class names in the dataset.
-        split (str): Dataset split (e.g., 'train', 'val', 'test').
+        split (str): Dataset split (e.g., 'train', 'val').
         ignore_index (int): Index to ignore in the dataset.
         num_classes (int): Number of classes in the dataset.
         max_name_len (int): Maximum length of class names.

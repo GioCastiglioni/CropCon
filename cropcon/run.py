@@ -143,25 +143,6 @@ def main(cfg: DictConfig) -> None:
             cfg["wandb_run_id"] = wandb.run.id
         OmegaConf.save(cfg, config_log_dir / "config.yaml")
 
-    else:
-        exp_dir = pathlib.Path(cfg.ckpt_dir)
-        exp_name = exp_dir.name
-        logger_path = exp_dir / "test.log"
-        # load training config
-        cfg_path = exp_dir / "configs" / "config.yaml"
-        cfg = OmegaConf.load(cfg_path)
-        if cfg.task.trainer.use_wandb and rank == 0:
-            import wandb
-
-            wandb_cfg = OmegaConf.to_container(cfg, resolve=True)
-            wandb.init(
-                project=cfg.wandb_project,
-                name=exp_name,
-                config=wandb_cfg,
-                id=cfg.get("wandb_run_id"),
-                resume="allow",
-            )
-
     logger = init_logger(logger_path, rank=rank)
     logger.info("============ Initialized logger ============")
     logger.info(pprint.pformat(OmegaConf.to_container(cfg), compact=True).strip("{}"))
@@ -374,39 +355,22 @@ def main(cfg: DictConfig) -> None:
 
         trainer.train()
 
-    # Evaluation
-    test_preprocessor = instantiate(
-        cfg.preprocessing.test,
-        dataset_cfg=cfg.dataset,
-        encoder_cfg=cfg.encoder,
-        _recursive_=False,
+    model_dict = torch.load(get_best_model_ckpt_path(exp_dir), map_location=device, weights_only=False)
+    
+    logger.info(
+        f"Best_mIoU: {model_dict['mIoU']}\n"
+        f"Best_mF1: {model_dict['mF1']}\n"
+        f"Best_mAcc: {model_dict['mAcc']}\n"
     )
-    # get datasets
-    raw_test_dataset: RawGeoFMDataset = instantiate(cfg.dataset, split="test")
-    test_dataset = GeoFMDataset(raw_test_dataset, test_preprocessor)
-
-    test_loader = DataLoader(
-            test_dataset,
-            sampler=DistributedSampler(test_dataset),
-            batch_size=cfg.test_batch_size,
-            num_workers=cfg.test_num_workers,
-            pin_memory=True,
-            persistent_workers=False,
-            drop_last=False,
-            collate_fn=collate_fn,
-        )
-    test_evaluator: Evaluator = instantiate(
-            cfg.task.evaluator, val_loader=test_loader, exp_dir=exp_dir, device=device,
-            dataset_name=cfg.dataset.dataset_name
-        )
-
-    if cfg.use_final_ckpt:
-            model_ckpt_path = get_final_model_ckpt_path(exp_dir)
-    else:
-            model_ckpt_path = get_best_model_ckpt_path(exp_dir)
-    test_evaluator.evaluate(decoder, "test_model", model_ckpt_path)
 
     if cfg.use_wandb and rank == 0:
+        wandb.log(
+            {
+                "Best_mIoU": model_dict["mIoU"],
+                "Best_mF1": model_dict["mF1"],
+                "Best_mAcc": model_dict["mAcc"]
+            }
+        )
         wandb.finish()
 
     torch.distributed.destroy_process_group()
