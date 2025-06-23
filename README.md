@@ -26,7 +26,7 @@ git clone https://github.com/GioCastiglioni/CropCon
 
 ```
 cd CropCon
-conda env create CropCon python=3.11
+conda create -n CropCon python=3.11
 conda activate CropCon
 pip install -r requirements.txt
 ```
