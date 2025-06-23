@@ -138,11 +138,11 @@ class Pastis(RawGeoFMDataset):
         )
 
         folds_dict = {
-            "1": {"train": [1,2,3], "val": [4], "test": [5]},
-            "2": {"train": [2,3,4], "val": [5], "test": [1]},
-            "3": {"train": [3,4,5], "val": [1], "test": [2]},
-            "4": {"train": [4,5,1], "val": [2], "test": [3]},
-            "5": {"train": [5,1,2], "val": [3], "test": [4]},
+            "1": {"train": [1,2,3,4], "val": [5], "test": [5]},
+            "2": {"train": [2,3,4,5], "val": [1], "test": [1]},
+            "3": {"train": [3,4,5,1], "val": [2], "test": [2]},
+            "4": {"train": [4,5,1,2], "val": [3], "test": [3]},
+            "5": {"train": [5,1,2,3], "val": [4], "test": [4]},
             }
 
         assert split in ["train", "val", "test"], "Split must be train, val or test"
