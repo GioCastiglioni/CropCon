@@ -291,10 +291,6 @@ class Trainer:
             image = {"v1": image["optical"].to(self.device)}
             target = target.to(self.device)
 
-            with torch.no_grad():
-                image["v2"], target_transformed2 = self.temporal_transform(image["v1"].detach().clone(), target.clone())
-                image["v3"], target_transformed3 = self.temporal_transform(image["v1"].detach().clone(), target.clone())
-
             self.training_stats["data_time"].update(time.time() - end_time)
 
             with torch.autocast(
@@ -314,6 +310,10 @@ class Trainer:
                     new_prototype = F.normalize(self.prototype_projector(new_prototype), dim=1)
 
                     self.update_prototypes_distributed(new_prototype, target_con1, epoch)
+
+                    with torch.no_grad():
+                        image["v2"], target_transformed2 = self.temporal_transform(image["v1"].detach().clone(), target.clone())
+                        image["v3"], target_transformed3 = self.temporal_transform(image["v1"].detach().clone(), target.clone())
 
                     feats = self.model.module.forward_features(torch.cat((image["v2"],image["v3"]), dim=0),
                                                 batch_positions=data["metadata"].repeat(2, 1))
@@ -337,9 +337,10 @@ class Trainer:
 
                     loss_contrastive = self.contrastive(self.prototypes, proj2, target_con2, proj3, target_con3)
 
-                else: loss_contrastive = 0.0
-                loss = loss_ce + self.alpha*loss_contrastive
+                    loss = loss_ce + self.alpha*loss_contrastive
 
+                else: loss = loss_ce
+                
             self.optimizer.zero_grad()
 
             if not torch.isfinite(loss):
