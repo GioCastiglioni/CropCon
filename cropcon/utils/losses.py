@@ -272,32 +272,79 @@ class SupContrastiveLoss(torch.nn.Module):
         return 'SupContrastiveLoss'
     
 
+class LogitCompensation(nn.Module): 
+    def __init__(self, distribution, ignore_index=-1, device="cuda"):
+        super().__init__()
+        priors = torch.tensor(distribution, dtype=torch.float32)
+        self.log_priors = torch.log(priors).to(device)
+        self.ignore_index = ignore_index
+
+    def forward(self, seg_logits, seg_targets):
+        """
+        seg_logits: [N, C, H, W] raw logits from segmentation head
+        seg_targets: [N, H, W] ground-truth labels
+        """
+        log_priors = self.log_priors
+
+        # Add log-prior compensation to each class logit
+        comp_logits = seg_logits + log_priors.view(1, -1, 1, 1)
+
+        # Apply cross-entropy with ignore_index
+        return F.cross_entropy(
+            comp_logits, 
+            seg_targets, 
+            reduction='mean',
+            ignore_index=self.ignore_index
+        )
+
 
 class BCLLoss(torch.nn.Module):
-    def __init__(self, tau=0.1, cls_num_list=None, device='cuda'):
+    def __init__(self, tau=0.1, device='cuda'):
         super().__init__()
         self.temperature = tau
         self.device = device
-        if cls_num_list is not None:
-            cls_num = torch.tensor(cls_num_list, dtype=torch.float, device=device)
-            self.class_weights = 1.0 / cls_num  # inverse frequency
-            self.class_weights = self.class_weights / self.class_weights.sum() * len(cls_num_list)
-        else:
-            self.class_weights = None
 
-    def forward(self, prototypes, proj2, target2, proj3, target3):
+    def forward(self, protos, proj2, target2, proj3, target3):
         # Concat views and targets to process jointly
-        features = torch.cat([proj2, proj3], dim=0)  # (N2+N3, feat_dim)
-        targets = torch.cat([target2, target3], dim=0).long()  # (N2+N3,)
+        region_labels = torch.cat([target2, target3], dim=0).long()  # [M]
 
-        # Compute similarity logits between v2 and v2 to prototype vectors
-        logits = torch.matmul(features, prototypes.T) / self.temperature  # (N_total, n_classes)
+        feats = F.normalize(torch.cat([proj2, proj3], dim=0), dim=1)    # [M, D]
+        protos = F.normalize(protos, dim=1)    # [C, D]
 
-        # Apply class-based reweighting to logits (softmax denominator)
-        if self.class_weights is not None:
-            weights = self.class_weights.unsqueeze(0).expand_as(logits)  # (N_total, n_classes)
-            logits = logits - torch.log(weights + 1e-12)  # bias the logits against frequent classes
+        M = feats.shape[0]
 
-        loss = F.cross_entropy(logits, targets)
-
+        loss = 0.0
+        for i in range(M):
+            yi = region_labels[i].item()
+            zi = feats[i]                         # [D] normalized embedding
+            # Gather positives: other regions of class yi plus the prototype of yi
+            same_mask = (region_labels == yi)
+            same_idx = torch.where(same_mask)[0]
+            other_idx = same_idx[same_idx != i]   # indices of other regions (if any)
+            pos_feats = []
+            if other_idx.numel() > 0:
+                pos_feats.append(feats[other_idx])       # [n_pos, D]
+            pos_feats.append(protos[yi].unsqueeze(0))    # [1, D] (class prototype)
+            pos_feats = torch.cat(pos_feats, dim=0)     # [n_pos+1, D]
+            # Numerator: sum of exp(similarity/temperature) over positives
+            sim_pos = torch.exp(torch.matmul(pos_feats, zi) / self.temperature)  # [n_pos+1]
+            numer = sim_pos.sum()
+            # Denominator: sum over each class j (samples + prototype)
+            denom = 0.0
+            C = protos.shape[0]
+            for c in range(C):
+                mask_c = (region_labels == c)
+                idx_c = torch.where(mask_c)[0]
+                if idx_c.numel() > 0:
+                    feats_c = feats[idx_c]                # [n_c, D]
+                    sim_c = torch.exp(torch.matmul(feats_c, zi) / self.temperature).sum()
+                else:
+                    sim_c = torch.tensor(0.0, device=self.device)
+                # include prototype for class c
+                sim_proto = torch.exp(torch.matmul(protos[c].unsqueeze(0), zi) / self.temperature).sum()
+                sim_c += sim_proto
+                denom += sim_c / (idx_c.numel() + 1)
+            loss_i = -torch.log(numer / denom)
+            loss += loss_i / (pos_feats.size(0))   # average over positives count
+        loss = loss / M
         return loss

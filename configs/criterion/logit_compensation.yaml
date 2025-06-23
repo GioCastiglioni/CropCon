@@ -1,0 +1,3 @@
+_target_: cropcon.utils.losses.LogitCompensation
+distribution: ${dataset.distribution}
+ignore_index: ${dataset.ignore_index}
