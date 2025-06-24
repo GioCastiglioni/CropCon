@@ -34,8 +34,8 @@ class ProjectionHead(nn.Module):
         # MLP projection head
         self.mlp = nn.Sequential(
             nn.Linear(embed_dim, mlp_hidden_dim),
-            nn.ReLU(),
-            nn.Linear(mlp_hidden_dim, projection_dim)
+            nn.ReLU(inplace=True),
+            nn.Linear(mlp_hidden_dim, projection_dim, bias=False)
         )
 
     def forward(self, x):
