@@ -298,20 +298,22 @@ class Trainer:
             with torch.autocast(
                 "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
             ):
-                logits, feat_v1  = self.model(image["v1"],
+                logits  = self.model(image["v1"],
                                               batch_positions=data["metadata"],
-                                              return_feats=True)
+                                              return_feats=False)
                 loss_ce = self.compute_loss(logits, target)
-                if self.alpha > 0.0: 
-                    feat_con1, target_con1 = self.extract_classwise_representations(
-                        feat_v1,
-                        target.unsqueeze(1).float()
-                        )
-                    
-                    new_prototype = self.compute_class_prototypes(feat_con1, target_con1)
-                    new_prototype = self.prototype_projector(new_prototype)
+                if self.alpha > 0.0:
+                    with torch.no_grad():
+                        feat_v1 = self.model.module.forward_features(image["v1"],
+                                                    batch_positions=data["metadata"])
+                        feat_con1, target_con1 = self.extract_classwise_representations(
+                            feat_v1,
+                            target.unsqueeze(1).float()
+                            )
+                        new_prototype = self.compute_class_prototypes(feat_con1, target_con1)
+                        self.update_prototypes_distributed(new_prototype, target_con1, epoch)
 
-                    self.update_prototypes_distributed(new_prototype, target_con1, epoch)
+                    projected_prototypes = self.prototype_projector(self.prototypes.detach())
 
                     with torch.no_grad():
                         image["v2"], target_transformed2 = self.temporal_transform(image["v1"].detach().clone(), target.clone())
@@ -337,7 +339,7 @@ class Trainer:
                     proj2 = projs[:image["v2"].shape[0]]
                     proj3 = projs[image["v2"].shape[0]:]
 
-                    loss_contrastive = self.contrastive(self.prototypes, proj2, target_con2, proj3, target_con3)
+                    loss_contrastive = self.contrastive(projected_prototypes, proj2, target_con2, proj3, target_con3)
 
                     loss = self.lamb*loss_ce + self.alpha*loss_contrastive
 
