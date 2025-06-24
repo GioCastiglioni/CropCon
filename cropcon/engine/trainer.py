@@ -127,7 +127,7 @@ class Trainer:
 
         self.n_classes = self.model.module.num_classes
         
-        self.prototypes = torch.zeros((self.n_classes, self.projection_dim), device=self.device).requires_grad_(False)
+        self.prototypes = torch.zeros((self.n_classes, self.model.module.dec_topology[0]), device=self.device).requires_grad_(False)
         self.prototype_initialized = torch.zeros(self.n_classes, dtype=torch.bool, device=self.device)
 
         self.momentum_ema = lambda epoch: min(0.9, 0.7 + 0.04 * epoch)
