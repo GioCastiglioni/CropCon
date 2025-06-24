@@ -177,8 +177,8 @@ def main(cfg: DictConfig) -> None:
     projector = torch.nn.parallel.DistributedDataParallel(
         ProjectionHead(
             embed_dim=decoder.module.dec_topology[0],
-            mlp_hidden_dim=256,
-            projection_dim=64,
+            mlp_hidden_dim=512,
+            projection_dim=cfg.projection_dim,
             attention=False).to(device),
             device_ids=[local_rank],
             output_device=local_rank,
@@ -188,8 +188,8 @@ def main(cfg: DictConfig) -> None:
     prototype_projector = torch.nn.parallel.DistributedDataParallel(
         ProjectionHead(
             embed_dim=decoder.module.dec_topology[0],
-            mlp_hidden_dim=256,
-            projection_dim=64,
+            mlp_hidden_dim=512,
+            projection_dim=cfg.projection_dim,
             attention=True).to(device),
             device_ids=[local_rank],
             output_device=local_rank,
