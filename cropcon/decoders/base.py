@@ -40,6 +40,7 @@ class ProjectionHead(nn.Module):
 
     def forward(self, x):
         if self.attn != None:
+            x = x.unsqueeze(0)
             x, _ = self.attn(x, x, x)
             x = x.squeeze(0)  # shape: [batch_size, embed_dim]
         # Project through MLP
