@@ -9,6 +9,7 @@ import torchvision.transforms.v2 as v2
 import torchvision.transforms.v2.functional as Fv
 import torch.nn.functional as TF
 from torchvision.transforms import InterpolationMode
+from torchvision import tv_tensors
 
 
 def seed_worker(worker_id):
@@ -148,16 +149,15 @@ class ConsistentTransform(torch.nn.Module):
         super().__init__()
         self.degrees = degrees
         self.transforms = v2.Compose([
-            v2.RandomResizedCrop(size=(128, 128), scale=(0.8, 1.0),
-                         interpolation={"image": InterpolationMode.BILINEAR,
-                                        "mask": InterpolationMode.NEAREST}),
+            v2.RandomResizedCrop(size=(128, 128), scale=(0.8, 1.0)),
             v2.RandomHorizontalFlip(p=p),
             v2.RandomVerticalFlip(p=p),
             ])
 
     def forward(self, sample):
+        sample = {"image": tv_tensors.Image(sample["image"]), "mask": tv_tensors.Mask(sample["mask"])}
         sample = self.transforms(sample)
-        img, mask = sample["image"], sample["mask"]
+        img, mask = torch.as_tensor(sample["image"]), torch.as_tensor(sample["mask"])
 
         # Apply same rotation to both, with different interpolation modes
         angle = torch.empty(1).uniform_(-self.degrees, self.degrees).item()
