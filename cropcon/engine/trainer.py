@@ -41,6 +41,7 @@ class Trainer:
         log_interval: int,
         best_metric_key: str,
         tau: float,
+        lamb: float,
         alpha: float,
         projection_dim: int = 128
     ):
@@ -113,6 +114,7 @@ class Trainer:
 
         self.channel_drop = T.Compose([RandomChannelDropout(p=0.5, max_drop=5)])
         
+        self.lamb = lamb
         self.alpha = alpha
 
         self.contrastive = BCLLoss(tau=tau, ignore_index=self.criterion.ignore_index)
@@ -198,7 +200,7 @@ class Trainer:
 
         # Prepare output tensors
         x_out = torch.empty((B,C,Temp,H,W), device=x.device)
-        mask_out = torch.empty((B,H,W), device=x.device)
+        mask_out = torch.empty((B,H,W), dtype=torch.long, device=x.device)
 
         for b in range(B):
             x_b = x[b*Temp:(b+1)*Temp]  # [T, C, H, W]
@@ -307,7 +309,7 @@ class Trainer:
                         )
                     
                     new_prototype = self.compute_class_prototypes(feat_con1, target_con1)
-                    new_prototype = F.normalize(self.prototype_projector(new_prototype), dim=1)
+                    new_prototype = self.prototype_projector(new_prototype)
 
                     self.update_prototypes_distributed(new_prototype, target_con1, epoch)
 
@@ -337,7 +339,7 @@ class Trainer:
 
                     loss_contrastive = self.contrastive(self.prototypes, proj2, target_con2, proj3, target_con3)
 
-                    loss = loss_ce + self.alpha*loss_contrastive
+                    loss = self.lamb*loss_ce + self.alpha*loss_contrastive
 
                 else: loss = loss_ce
                 
@@ -577,6 +579,7 @@ class SegTrainer(Trainer):
         log_interval: int,
         best_metric_key: str,
         tau: float,
+        lamb: float,
         alpha: float,
         projection_dim: int = 128,
     ):
@@ -620,6 +623,7 @@ class SegTrainer(Trainer):
             log_interval=log_interval,
             best_metric_key=best_metric_key,
             tau=tau,
+            lamb=lamb,
             alpha=alpha
         )
 
