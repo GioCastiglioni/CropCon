@@ -178,7 +178,7 @@ def main(cfg: DictConfig) -> None:
         ProjectionHead(
             embed_dim=decoder.module.dec_topology[0],
             mlp_hidden_dim=256,
-            projection_dim=128,
+            projection_dim=64,
             attention=False).to(device),
             device_ids=[local_rank],
             output_device=local_rank,
@@ -189,7 +189,7 @@ def main(cfg: DictConfig) -> None:
         ProjectionHead(
             embed_dim=decoder.module.dec_topology[0],
             mlp_hidden_dim=256,
-            projection_dim=128,
+            projection_dim=64,
             attention=False).to(device),
             device_ids=[local_rank],
             output_device=local_rank,
