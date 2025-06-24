@@ -5,6 +5,7 @@ from torch.optim.optimizer import Optimizer
 
 import numpy as np
 import torch
+import torchvision.transforms.v2 as v2
 import torchvision.transforms.v2.functional as Fv
 import torch.nn.functional as TF
 from torchvision.transforms import InterpolationMode
@@ -145,25 +146,21 @@ class RandomChannelDropout(torch.nn.Module):
 class ConsistentTransform(torch.nn.Module):
     def __init__(self, degrees=30, p=0.5):
         super().__init__()
-        self.hflip_p = p
-        self.vflip_p = p
         self.degrees = degrees
+        self.transforms = v2.Compose([
+            v2.RandomResizedCrop(size=(128, 128), scale=(0.8, 1.0),
+                         interpolation={"image": InterpolationMode.BILINEAR,
+                                        "mask": InterpolationMode.NEAREST}),
+            v2.RandomHorizontalFlip(p=p),
+            v2.RandomVerticalFlip(p=p),
+            ])
 
     def forward(self, sample):
+        sample = self.transforms(sample)
         img, mask = sample["image"], sample["mask"]
-        # Sample random parameters
-        do_hflip = torch.rand(1).item() < self.hflip_p
-        do_vflip = torch.rand(1).item() < self.vflip_p
-        angle = torch.empty(1).uniform_(-self.degrees, self.degrees).item()
-
-        if do_hflip:
-            img = Fv.hflip(img)
-            mask = Fv.hflip(mask)
-        if do_vflip:
-            img = Fv.vflip(img)
-            mask = Fv.vflip(mask)
 
         # Apply same rotation to both, with different interpolation modes
+        angle = torch.empty(1).uniform_(-self.degrees, self.degrees).item()
         img = self.rotate_with_reflection_padding(img, angle, is_mask=False)
         mask = self.rotate_with_reflection_padding(mask, angle, is_mask=True)
 
