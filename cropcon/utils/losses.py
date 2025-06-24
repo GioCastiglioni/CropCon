@@ -173,9 +173,9 @@ class BCLLoss(torch.nn.Module):
 
     def forward(self, protos, proj2, target2, proj3, target3):
         # Combine projections and labels
-        feats = F.normalize(torch.cat([proj2, proj3], dim=0), dim=1)         # [M, D]
+        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)         # [M, D]
         labels = torch.cat([target2, target3], dim=0).long()                 # [M]
-        protos = F.normalize(protos, dim=1)                                   # [C, D]
+        protos = F.normalize(protos, p=2, dim=-1)                                   # [C, D]
 
         # Remove ignored labels
         valid_mask = labels != self.ignore_index
