@@ -1,6 +1,6 @@
 train: true
 work_dir: ""
-seed: 234
+seed: 242
 use_wandb: false
 wandb_run_id: null
 wandb_project: ""
