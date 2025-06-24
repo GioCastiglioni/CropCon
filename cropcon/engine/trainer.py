@@ -43,7 +43,7 @@ class Trainer:
         tau: float,
         lamb: float,
         alpha: float,
-        projection_dim: int = 128
+        projection_dim: int,
     ):
         """Initialize the Trainer.
 
@@ -581,7 +581,7 @@ class SegTrainer(Trainer):
         tau: float,
         lamb: float,
         alpha: float,
-        projection_dim: int = 128,
+        projection_dim: int,
     ):
         """Initialize the Trainer for segmentation task.
         Args:
