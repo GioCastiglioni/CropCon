@@ -137,7 +137,8 @@ def main(cfg: DictConfig) -> None:
                     str(int(cfg.limited_label_train*100)),
                     f"alpha{str(cfg.task.trainer.alpha).replace('.', '_')}",
                     f"tau{str(cfg.task.trainer.tau).replace('.', '_')}",
-                    f"fold{cfg.dataset.fold_config}"
+                    f"fold{cfg.dataset.fold_config}",
+                    f"{cfg.task.trainer.bcl_config}"
                     ],
             )
             cfg["wandb_run_id"] = wandb.run.id

@@ -169,7 +169,7 @@ class BCLLoss(torch.nn.Module):
         super().__init__()
         self.temperature = tau
         self.ignore_index = ignore_index
-        self.bcl_config = forward_config
+        self.bcl_config = bcl_config
         self.device = device
 
     def forward(self, protos, proj2, target2, proj3, target3):
