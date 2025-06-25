@@ -165,13 +165,25 @@ class LogitCompensation(torch.nn.Module):
 
 
 class BCLLoss(torch.nn.Module):
-    def __init__(self, tau=0.1, ignore_index=-1, device='cuda'):
+    def __init__(self, tau=0.1, ignore_index=-1, bcl_config="original", device='cuda'):
         super().__init__()
         self.temperature = tau
         self.ignore_index = ignore_index
+        self.bcl_config = forward_config
         self.device = device
 
     def forward(self, protos, proj2, target2, proj3, target3):
+        if self.bcl_config == "original":
+            return self.forward_original(protos, proj2, target2, proj3, target3)
+        elif self.bcl_config == "separated":
+            return self.forward_separated(protos, proj2, target2, proj3, target3)
+        elif self.bcl_config == "decoupled":
+            return self.forward_decoupled(protos, proj2, target2, proj3, target3)
+        elif self.bcl_config == "separated_decoupled":
+            return self.forward_separated_decoupled(protos, proj2, target2, proj3, target3)
+        
+
+    def forward_original(self, protos, proj2, target2, proj3, target3):
         # Normalize and combine features
         feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)  # [M, D]
         labels = torch.cat([target2, target3], dim=0).long()                # [M]

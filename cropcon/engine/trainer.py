@@ -27,6 +27,7 @@ class Trainer:
         prototype_projector: nn.Module,
         train_loader: DataLoader,
         criterion: nn.Module,
+        bcl_config: str,
         distribution: list,
         optimizer: Optimizer,
         lr_scheduler: LRScheduler,
@@ -87,6 +88,7 @@ class Trainer:
         self.log_interval = log_interval
         self.best_metric_key = best_metric_key
         self.projection_dim=projection_dim
+        self.bcl_config=bcl_config
 
         self.training_stats = {
             name: RunningAverageMeter(length=self.batch_per_epoch)
@@ -117,7 +119,7 @@ class Trainer:
         self.lamb = lamb
         self.alpha = alpha
 
-        self.contrastive = BCLLoss(tau=tau, ignore_index=self.criterion.ignore_index)
+        self.contrastive = BCLLoss(tau=tau, ignore_index=self.criterion.ignore_index, bcl_config=bcl_config, device=self.device)
 
         self.projector = projector
         
@@ -567,6 +569,7 @@ class SegTrainer(Trainer):
         prototype_projector: nn.Module,
         train_loader: DataLoader,
         criterion: nn.Module,
+        bcl_config: str,
         distribution: list,
         optimizer: Optimizer,
         lr_scheduler: LRScheduler,
@@ -611,6 +614,7 @@ class SegTrainer(Trainer):
             projection_dim=projection_dim,
             train_loader=train_loader,
             criterion=criterion,
+            bcl_config=bcl_config,
             distribution=distribution,
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,

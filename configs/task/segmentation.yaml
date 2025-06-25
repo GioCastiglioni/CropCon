@@ -21,6 +21,7 @@ trainer:
   tau: 1.0
   lamb: 2.0
   alpha: 0.6
+  bcl_config: original
 
 evaluator:
   _target_: cropcon.engine.evaluator.SegEvaluator
