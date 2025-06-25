@@ -225,3 +225,54 @@ class BCLLoss(torch.nn.Module):
 
     def __str__(self):
         return 'BCLLoss'
+
+
+
+class BCLLoss(nn.Module):
+    def __init__(self, tau=0.1, ignore_index=-1, device='cuda'):
+        super().__init__()
+        self.temperature = tau
+        self.ignore_index = ignore_index
+        self.device = device
+
+    def forward(self, protos, proj2, target2, proj3, target3):
+        # Normalize and combine features
+        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)  # [M, D]
+        labels = torch.cat([target2, target3], dim=0).long()                # [M]
+        protos = F.normalize(protos, p=2, dim=-1)                           # [C, D]
+
+        # Filter out ignored labels
+        valid_mask = labels != self.ignore_index
+        feats = feats[valid_mask]
+        labels = labels[valid_mask]
+
+        M, D = feats.shape
+        if M == 0:
+            return torch.tensor(0.0, device=self.device, requires_grad=True)
+
+        C = protos.size(0)
+
+        # Similarity matrices
+        sim_matrix = torch.matmul(feats, feats.T) / self.temperature        # [M, M]
+        proto_sim = torch.matmul(feats, protos.T) / self.temperature        # [M, C]
+
+        # Remove self-similarity from sim_matrix
+        eye = torch.eye(M, device=feats.device, dtype=torch.bool)
+        sim_matrix = sim_matrix.masked_fill(eye, -float('inf'))
+
+        # Class-equality mask
+        match_matrix = labels.unsqueeze(1) == labels.unsqueeze(0)           # [M, M]
+
+        # Numerator: same-class samples + class prototype
+        numer_region = torch.exp(sim_matrix) * match_matrix                 # [M, M]
+        numer_proto = torch.gather(torch.exp(proto_sim), 1, labels.view(-1,1))  # [M, 1]
+        numer = numer_region.sum(dim=1) + numer_proto.squeeze(1)            # [M]
+
+        # Denominator: all feats + all protos
+        denom = torch.exp(sim_matrix).sum(dim=1) + torch.exp(proto_sim).sum(dim=1)  # [M]
+
+        loss = -torch.log(numer / (denom + 1e-12))                          # [M]
+        return loss.mean()
+
+    def __str__(self):
+        return 'BCLLoss'
