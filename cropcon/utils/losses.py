@@ -210,5 +210,116 @@ class BCLLoss(torch.nn.Module):
         loss = -torch.log(numer / (denom + 1e-12))                          # [M]
         return loss.mean()
 
+    def forward_separated(self, protos, proj2, target2, proj3, target3):
+        # Combine features and targets
+        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)  # [M, D]
+        labels = torch.cat([target2, target3], dim=0).long()                # [M]
+        protos = F.normalize(protos, p=2, dim=-1)                           # [C, D]
+
+        # Remove ignored labels
+        valid_mask = labels != self.ignore_index
+        feats = feats[valid_mask]
+        labels = labels[valid_mask]
+
+        M = feats.size(0)
+        if M == 0:
+            return torch.tensor(0.0, device=self.device, requires_grad=True)
+
+        C = protos.size(0)
+
+        # === REGION-REGION TERM ===
+        sim_matrix = torch.matmul(feats, feats.T) / self.temperature         # [M, M]
+        eye = torch.eye(M, device=feats.device, dtype=torch.bool)
+        sim_matrix.masked_fill_(eye, float('-inf'))                         # remove self-similarity
+
+        log_probs_regions = F.log_softmax(sim_matrix, dim=1)                # [M, M]
+        label_matrix = labels.unsqueeze(1) == labels.unsqueeze(0)           # [M, M]
+        pos_region_logprob = (log_probs_regions * label_matrix).sum(dim=1) # sum over matching samples
+
+        # === REGION-PROTOTYPE TERM ===
+        proto_sim = torch.matmul(feats, protos.T) / self.temperature         # [M, C]
+        log_probs_protos = F.log_softmax(proto_sim, dim=1)                  # [M, C]
+        pos_proto_logprob = log_probs_protos.gather(1, labels.view(-1,1)).squeeze(1)  # [M]
+
+        # Final loss (sum of both)
+        loss = -(pos_region_logprob + pos_proto_logprob)                    # [M]
+        return loss.mean()
+
+    def forward_decoupled(self, protos, proj2, target2, proj3, target3):
+        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)  # [M, D]
+        labels = torch.cat([target2, target3], dim=0).long()                # [M]
+        protos = F.normalize(protos, p=2, dim=-1)                           # [C, D]
+
+        valid_mask = labels != self.ignore_index
+        feats = feats[valid_mask]
+        labels = labels[valid_mask]
+
+        M, D = feats.shape
+        C = protos.size(0)
+        
+        sim_feats = torch.matmul(feats, feats.T) / self.temperature         # [M, M]
+        sim_protos = torch.matmul(feats, protos.T) / self.temperature       # [M, C]
+
+        eye = torch.eye(M, device=feats.device, dtype=torch.bool)
+        sim_feats = sim_feats.masked_fill(eye, -float('inf'))
+
+        # Positive masks
+        match_matrix = labels.unsqueeze(1) == labels.unsqueeze(0)          # [M, M]
+        proto_match = F.one_hot(labels, num_classes=C).bool()              # [M, C]
+
+        # Numerators
+        numer_feat = torch.exp(sim_feats) * match_matrix                   # [M, M]
+        numer_proto = torch.exp(sim_protos)[proto_match].unsqueeze(1)     # [M, 1]
+        numerator = numer_feat.sum(dim=1) + numer_proto.squeeze(1)
+
+        # Denominator: exclude positives
+        denom_feat = torch.exp(sim_feats) * (~match_matrix)
+        denom_proto = torch.exp(sim_protos).masked_fill(proto_match, 0.0)
+        denominator = denom_feat.sum(dim=1) + denom_proto.sum(dim=1)
+
+        loss = -torch.log(numerator / (denominator + 1e-12))
+        return loss.mean()
+
+    def forward_separated_decoupled(self, protos, proj2, target2, proj3, target3):
+        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)
+        labels = torch.cat([target2, target3], dim=0).long()
+        protos = F.normalize(protos, p=2, dim=-1)
+
+        valid_mask = labels != self.ignore_index
+        feats = feats[valid_mask]
+        labels = labels[valid_mask]
+
+        M = feats.size(0)
+        if M == 0:
+            return torch.tensor(0.0, device=self.device, requires_grad=True)
+
+        C = protos.size(0)
+
+        # === REGION-REGION TERM ===
+        sim_matrix = torch.matmul(feats, feats.T) / self.temperature
+        eye = torch.eye(M, device=feats.device, dtype=torch.bool)
+        sim_matrix = sim_matrix.masked_fill(eye, -float('inf'))
+
+        label_matrix = labels.unsqueeze(1) == labels.unsqueeze(0)
+        neg_label_matrix = ~label_matrix & ~eye
+
+        numer_region = torch.exp(sim_matrix) * label_matrix     # [M, M]
+        denom_region = torch.exp(sim_matrix) * neg_label_matrix # [M, M]
+
+        loss_region = -torch.log(
+            numer_region.sum(dim=1) / (denom_region.sum(dim=1) + 1e-12)
+        )
+
+        # === REGION-PROTOTYPE TERM ===
+        proto_sim = torch.matmul(feats, protos.T) / self.temperature
+        proto_pos = torch.gather(torch.exp(proto_sim), 1, labels.view(-1,1)).squeeze(1)  # [M]
+
+        proto_mask = F.one_hot(labels, C).bool()  # [M, C]
+        proto_neg = torch.exp(proto_sim).masked_fill(proto_mask, 0.0).sum(dim=1)
+
+        loss_proto = -torch.log(proto_pos / (proto_neg + 1e-12))  # [M]
+
+        return (loss_region + loss_proto).mean()
+
     def __str__(self):
         return 'BCLLoss'
