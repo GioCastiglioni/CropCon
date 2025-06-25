@@ -175,13 +175,64 @@ class BCLLoss(torch.nn.Module):
     def forward(self, protos, proj2, target2, proj3, target3):
         if self.bcl_config == "original":
             return self.forward_original(protos, proj2, target2, proj3, target3)
-        elif self.bcl_config == "separated":
-            return self.forward_separated(protos, proj2, target2, proj3, target3)
         elif self.bcl_config == "decoupled":
             return self.forward_decoupled(protos, proj2, target2, proj3, target3)
-        elif self.bcl_config == "separated_decoupled":
-            return self.forward_separated_decoupled(protos, proj2, target2, proj3, target3)
+        elif self.bcl_config == "prototypes":
+            return self.forward_only_prototypes(protos, proj2, target2, proj3, target3)
+        elif self.bcl_config == "class_balanced":
+            return self.forward_only_prototypes(protos, proj2, target2, proj3, target3)
         
+    def forward_class_balanced(self, protos, proj2, target2, proj3, target3):
+        # Normalize and concatenate features
+        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)  # [2B, D]
+        labels = torch.cat([target2, target3], dim=0).long()                # [2B]
+        protos = F.normalize(protos, p=2, dim=-1)                           # [C, D]
+        device = feats.device
+
+        B2 = feats.size(0)
+        C = protos.size(0)
+
+        # Extend features and labels with prototypes
+        features_all = torch.cat([feats, protos], dim=0)                    # [2B + C, D]
+        targets_all = torch.cat([
+            labels,                    # [2B]
+            torch.arange(C, device=device)  # [C]
+        ], dim=0)                                                          # [2B + C]
+
+        # Compute label frequencies in the batch (for weighting)
+        batch_cls_count = torch.eye(C, device=device)[targets_all].sum(dim=0)  # [C]
+
+        # Compute positive mask
+        mask = torch.eq(labels.unsqueeze(1), targets_all.unsqueeze(0)).float()  # [2B, 2B+C]
+
+        # Mask out self-similarities from region-region comparison
+        logits_mask = torch.ones_like(mask)
+        logits_mask[:, :B2].fill_diagonal_(0.0)  # [2B, 2B]
+
+        # Compute cosine similarity logits
+        logits = torch.matmul(feats, features_all.T) / self.temperature    # [2B, 2B+C]
+
+        # Stability: subtract max
+        logits_max, _ = torch.max(logits, dim=1, keepdim=True)
+        logits = logits - logits_max.detach()
+
+        # Compute weights for class balancing
+        targets_expanded = targets_all.unsqueeze(0).expand(B2, -1)         # [2B, 2B+C]
+        per_ins_weight = batch_cls_count[targets_expanded] - mask         # [2B, 2B+C]
+
+        # Exponentiate logits and mask
+        exp_logits = torch.exp(logits) * logits_mask
+
+        # Compute class-balanced denominator
+        denom = (exp_logits / (per_ins_weight + 1e-12)).sum(dim=1, keepdim=True)  # [2B, 1]
+
+        # Compute log-probabilities
+        log_prob = logits - torch.log(denom + 1e-12)                        # [2B, 2B+C]
+        mean_log_prob_pos = (mask * log_prob).sum(dim=1) / (mask.sum(dim=1) + 1e-12)  # [2B]
+
+        # Final loss
+        loss = -mean_log_prob_pos
+        return loss.mean()
 
     def forward_original(self, protos, proj2, target2, proj3, target3):
         # Normalize and combine features
@@ -222,41 +273,6 @@ class BCLLoss(torch.nn.Module):
         loss = -torch.log(numer / (denom + 1e-12))                          # [M]
         return loss.mean()
 
-    def forward_separated(self, protos, proj2, target2, proj3, target3):
-        # Combine features and targets
-        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)  # [M, D]
-        labels = torch.cat([target2, target3], dim=0).long()                # [M]
-        protos = F.normalize(protos, p=2, dim=-1)                           # [C, D]
-
-        # Remove ignored labels
-        valid_mask = labels != self.ignore_index
-        feats = feats[valid_mask]
-        labels = labels[valid_mask]
-
-        M = feats.size(0)
-        if M == 0:
-            return torch.tensor(0.0, device=self.device, requires_grad=True)
-
-        C = protos.size(0)
-
-        # === REGION-REGION TERM ===
-        sim_matrix = torch.matmul(feats, feats.T) / self.temperature         # [M, M]
-        eye = torch.eye(M, device=feats.device, dtype=torch.bool)
-        sim_matrix.masked_fill_(eye, float('-inf'))                         # remove self-similarity
-
-        log_probs_regions = F.log_softmax(sim_matrix, dim=1)                # [M, M]
-        label_matrix = labels.unsqueeze(1) == labels.unsqueeze(0)           # [M, M]
-        pos_region_logprob = (log_probs_regions * label_matrix).sum(dim=1) # sum over matching samples
-
-        # === REGION-PROTOTYPE TERM ===
-        proto_sim = torch.matmul(feats, protos.T) / self.temperature         # [M, C]
-        log_probs_protos = F.log_softmax(proto_sim, dim=1)                  # [M, C]
-        pos_proto_logprob = log_probs_protos.gather(1, labels.view(-1,1)).squeeze(1)  # [M]
-
-        # Final loss (sum of both)
-        loss = -(pos_region_logprob + pos_proto_logprob)                    # [M]
-        return loss.mean()
-
     def forward_decoupled(self, protos, proj2, target2, proj3, target3):
         feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)  # [M, D]
         labels = torch.cat([target2, target3], dim=0).long()                # [M]
@@ -283,6 +299,7 @@ class BCLLoss(torch.nn.Module):
         numer_feat = torch.exp(sim_feats) * match_matrix                   # [M, M]
         numer_proto = torch.exp(sim_protos)[proto_match].unsqueeze(1)     # [M, 1]
         numerator = numer_feat.sum(dim=1) + numer_proto.squeeze(1)
+        numerator = torch.clamp(numerator, min=1e-12)
 
         # Denominator: exclude positives
         denom_feat = torch.exp(sim_feats) * (~match_matrix)
@@ -291,47 +308,36 @@ class BCLLoss(torch.nn.Module):
 
         loss = -torch.log(numerator / (denominator + 1e-12))
         return loss.mean()
+    
+    def forward_only_prototypes(self, protos, proj2, target2, proj3, target3):
+        # Normalize and combine features
+        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)  # [M, D]
+        labels = torch.cat([target2, target3], dim=0).long()                # [M]
+        protos = F.normalize(protos, p=2, dim=-1)                           # [C, D]
 
-    def forward_separated_decoupled(self, protos, proj2, target2, proj3, target3):
-        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)
-        labels = torch.cat([target2, target3], dim=0).long()
-        protos = F.normalize(protos, p=2, dim=-1)
-
+        # Filter out ignored labels
         valid_mask = labels != self.ignore_index
         feats = feats[valid_mask]
         labels = labels[valid_mask]
 
-        M = feats.size(0)
+        M, D = feats.shape
         if M == 0:
             return torch.tensor(0.0, device=self.device, requires_grad=True)
 
         C = protos.size(0)
 
-        # === REGION-REGION TERM ===
-        sim_matrix = torch.matmul(feats, feats.T) / self.temperature
-        eye = torch.eye(M, device=feats.device, dtype=torch.bool)
-        sim_matrix = sim_matrix.masked_fill(eye, -float('inf'))
+        # Similarity matrix
+        proto_sim = torch.matmul(feats, protos.T) / self.temperature        # [M, C]
 
-        label_matrix = labels.unsqueeze(1) == labels.unsqueeze(0)
-        neg_label_matrix = ~label_matrix & ~eye
+        # Numerator: same-class samples + class prototype               # [M, M]
+        numer_proto = torch.gather(torch.exp(proto_sim), 1, labels.view(-1,1))  # [M, 1]
+        numer = numer_proto.squeeze(1)            # [M]
 
-        numer_region = torch.exp(sim_matrix) * label_matrix     # [M, M]
-        denom_region = torch.exp(sim_matrix) * neg_label_matrix # [M, M]
+        # Denominator: all feats + all protos
+        denom = torch.exp(proto_sim).sum(dim=1)  # [M]
 
-        loss_region = -torch.log(
-            numer_region.sum(dim=1) / (denom_region.sum(dim=1) + 1e-12)
-        )
-
-        # === REGION-PROTOTYPE TERM ===
-        proto_sim = torch.matmul(feats, protos.T) / self.temperature
-        proto_pos = torch.gather(torch.exp(proto_sim), 1, labels.view(-1,1)).squeeze(1)  # [M]
-
-        proto_mask = F.one_hot(labels, C).bool()  # [M, C]
-        proto_neg = torch.exp(proto_sim).masked_fill(proto_mask, 0.0).sum(dim=1)
-
-        loss_proto = -torch.log(proto_pos / (proto_neg + 1e-12))  # [M]
-
-        return (loss_region + loss_proto).mean()
+        loss = -torch.log(numer / (denom + 1e-12))                          # [M]
+        return loss.mean()
 
     def __str__(self):
         return 'BCLLoss'
