@@ -217,7 +217,7 @@ class BCLLoss(torch.nn.Module):
 
         # === Denominator with class balancing ===
         # Estimate class frequency from labels (both feats and protos)
-        labels_all = torch.cat([labels, torch.arange(C, device=device)])    # [M + C]
+        labels_all = torch.cat([labels, torch.arange(C, device=self.device)])    # [M + C]
         cls_freq = torch.bincount(labels_all, minlength=C).float()          # [C]
         cls_freq = cls_freq + 1e-6  # avoid division by zero
 
@@ -242,7 +242,6 @@ class BCLLoss(torch.nn.Module):
         feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)  # [2B, D]
         labels = torch.cat([target2, target3], dim=0).long()                # [2B]
         protos = F.normalize(protos, p=2, dim=-1)                           # [C, D]
-        device = feats.device
 
         B2 = feats.size(0)
         C = protos.size(0)
@@ -251,11 +250,11 @@ class BCLLoss(torch.nn.Module):
         features_all = torch.cat([feats, protos], dim=0)                    # [2B + C, D]
         targets_all = torch.cat([
             labels,                    # [2B]
-            torch.arange(C, device=device)  # [C]
+            torch.arange(C, device=self.device)  # [C]
         ], dim=0)                                                          # [2B + C]
 
         # Compute label frequencies in the batch (for weighting)
-        batch_cls_count = torch.eye(C, device=device)[targets_all].sum(dim=0)  # [C]
+        batch_cls_count = torch.eye(C, device=self.device)[targets_all].sum(dim=0)  # [C]
 
         # Compute positive mask
         mask = torch.eq(labels.unsqueeze(1), targets_all.unsqueeze(0)).float()  # [2B, 2B+C]
@@ -334,7 +333,7 @@ class BCLLoss(torch.nn.Module):
         sim_feats = torch.matmul(feats, feats.T) / self.temperature         # [M, M]
         sim_protos = torch.matmul(feats, protos.T) / self.temperature       # [M, C]
 
-        eye = torch.eye(M, device=feats.device, dtype=torch.bool)
+        eye = torch.eye(M, device=self.device, dtype=torch.bool)
         sim_feats = sim_feats.masked_fill(eye, -float('inf'))
 
         # Positive masks
