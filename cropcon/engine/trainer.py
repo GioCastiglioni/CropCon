@@ -16,7 +16,7 @@ from torch.optim.optimizer import Optimizer
 from torch.utils.data import DataLoader, Subset
 
 from cropcon.utils.logger import RunningAverageMeter, sec_to_hm
-from cropcon.utils.losses import SupContrastiveLoss, BCLLoss
+from cropcon.utils.losses import CropConLoss
 from cropcon.utils.utils import RandomChannelDropout, ConsistentTransform
 
 class Trainer:
@@ -118,8 +118,9 @@ class Trainer:
         
         self.lamb = lamb
         self.alpha = alpha
+        self.current_alpha = lambda epoch: (alpha * (1 + np.cos(np.pi*epoch/self.n_epochs)) / 2) if epoch < self.n_epochs else 0
 
-        self.contrastive = BCLLoss(tau=tau, ignore_index=self.criterion.ignore_index, bcl_config=bcl_config, device=self.device)
+        self.contrastive = CropConLoss(tau=tau, ignore_index=self.criterion.ignore_index, bcl_config=bcl_config, device=self.device)
 
         self.projector = projector
         
@@ -343,7 +344,7 @@ class Trainer:
 
                     loss_contrastive = self.contrastive(projected_prototypes, proj2, target_con2, proj3, target_con3)
 
-                    loss = self.lamb*loss_ce + self.alpha*loss_contrastive
+                    loss = self.lamb*loss_ce + self.current_alpha(epoch)*loss_contrastive
 
                 else: loss = loss_ce
                 
