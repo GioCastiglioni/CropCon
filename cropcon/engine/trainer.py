@@ -312,7 +312,7 @@ class Trainer:
                             feat_v1,
                             target.unsqueeze(1).float()
                             )
-                        new_prototype = self.compute_class_prototypes(feat_con1, target_con1)
+                        new_prototype = F.Normalize(self.compute_class_prototypes(feat_con1, target_con1), p=2, dim=-1)
                         self.update_prototypes_distributed(new_prototype, target_con1, epoch)
 
                     projected_prototypes = self.prototype_projector(self.prototypes.detach())
