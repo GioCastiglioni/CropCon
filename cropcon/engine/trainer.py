@@ -42,7 +42,6 @@ class Trainer:
         log_interval: int,
         best_metric_key: str,
         tau: float,
-        lamb: float,
         alpha: float,
         projection_dim: int,
     ):
@@ -116,9 +115,8 @@ class Trainer:
 
         self.channel_drop = T.Compose([RandomChannelDropout(p=0.5, max_drop=5)])
         
-        self.lamb = lamb
         self.alpha = alpha
-        self.current_alpha = lambda epoch: (alpha * (1 + np.cos(np.pi*epoch/self.n_epochs)) / 2) if epoch < self.n_epochs else 0
+        #self.current_alpha = lambda epoch: (alpha * (1 + np.cos(np.pi*epoch/self.n_epochs)) / 2) if epoch < self.n_epochs else 0
 
         self.contrastive = CropConLoss(tau=tau, ignore_index=self.criterion.ignore_index, bcl_config=bcl_config, device=self.device)
 
@@ -133,7 +131,9 @@ class Trainer:
         self.prototypes = torch.zeros((self.n_classes, self.model.module.dec_topology[0]), device=self.device).requires_grad_(False)
         self.prototype_initialized = torch.zeros(self.n_classes, dtype=torch.bool, device=self.device)
 
-        self.momentum_ema = lambda epoch: min(0.9, 0.7 + 0.04 * epoch)
+        self.momentum_ema = torch.tensor(
+            [0.95 - 0.3*((self.distribution[i]-min(self.distribution))/(max(self.distribution)-min(self.distribution))) for i in range(self.n_classes)]
+            ).to(self.device).requires_grad_(False)
     
     def train(self) -> None:
         """Train the model for n_epochs then evaluate the model and save the best model."""
@@ -271,8 +271,8 @@ class Trainer:
                 self.prototype_initialized[cls] = True
             else:
                 updated = (
-                    self.momentum_ema(epoch) * self.prototypes[cls]
-                    + (1 - self.momentum_ema(epoch)) * global_updates[cls]
+                    self.momentum_ema[cls] * self.prototypes[cls]
+                    + (1 - self.momentum_ema[cls]) * global_updates[cls]
                 )
                 self.prototypes[cls] = F.normalize(updated, dim=0)
 
@@ -344,7 +344,14 @@ class Trainer:
 
                     loss_contrastive = self.contrastive(projected_prototypes, proj2, target_con2, proj3, target_con3)
 
-                    loss = self.lamb*loss_ce + self.current_alpha(epoch)*loss_contrastive
+                    # === Prototypes Regularization ===
+                    prot_var_reg = torch.sqrt(projected_prototypes.var(dim=0) + 1e-12)
+                    prot_var_reg = torch.mean(F.relu(1 - prot_var_reg))
+
+                    prot_cov_reg = ((projected_prototypes.T @ projected_prototypes) / (self.n_classes - 1)).square()
+                    prot_cov_reg = (prot_cov_reg.sum() - prot_cov_reg.diagonal().sum()) / self.projection_dim
+
+                    loss = (1 - self.alpha)*loss_ce + self.alpha*loss_contrastive + prot_var_reg + 0.1*prot_cov_reg
 
                 else: loss = loss_ce
                 
@@ -585,7 +592,6 @@ class SegTrainer(Trainer):
         log_interval: int,
         best_metric_key: str,
         tau: float,
-        lamb: float,
         alpha: float,
         projection_dim: int,
     ):
@@ -630,7 +636,6 @@ class SegTrainer(Trainer):
             log_interval=log_interval,
             best_metric_key=best_metric_key,
             tau=tau,
-            lamb=lamb,
             alpha=alpha
         )
 
