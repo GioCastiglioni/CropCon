@@ -305,15 +305,20 @@ class CropConLoss(torch.nn.Module):
 
         C = protos.size(0)
 
+        labels_all = torch.cat([labels, torch.arange(C, device=self.device)]) 
+        cls_freq = torch.bincount(labels_all, minlength=C).float()         
+        cls_freq = cls_freq + 1e-12  # avoid division by zero
+        proto_weights = cls_freq.unsqueeze(0).expand(M, -1)  
+
         # Similarity matrix
         proto_sim = torch.matmul(feats, protos.T) / self.temperature        # [M, C]
 
-        # Numerator: same-class samples + class prototype               # [M, M]
+        # Numerator: class prototype
         numer_proto = torch.gather(torch.exp(proto_sim), 1, labels.view(-1,1))  # [M, 1]
         numer = numer_proto.squeeze(1)            # [M]
 
         # Denominator: all feats + all protos
-        denom = torch.exp(proto_sim).sum(dim=1)  # [M]
+        denom = (torch.exp(proto_sim) / proto_weights).sum(dim=1)              # [M]
 
         loss = -torch.log(numer / (denom + 1e-12))                          # [M]
         return loss.mean()
