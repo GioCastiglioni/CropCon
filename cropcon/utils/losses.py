@@ -233,16 +233,9 @@ class CropConLoss(torch.nn.Module):
         denom_proto = torch.exp(proto_sim) / proto_weights                  # [M, C]
         denom = denom_region.sum(dim=1) + denom_proto.sum(dim=1)            # [M]
 
-        # === Prototypes Regularization ===
-        prot_var_reg = torch.sqrt(protos.var(dim=0) + 1e-12)
-        prot_var_reg = torch.mean(F.relu(1 - prot_var_reg))
-
-        prot_cov_reg = ((protos.T @ protos) / (C - 1)).square()                  # [D,D]
-        prot_cov_reg = (prot_cov_reg.sum() - prot_cov_reg.diagonal().sum()) / D
-
         # === Final loss ===
         loss = -torch.log(numer / (denom + 1e-12))                          # [M]
-        return loss.mean() + prot_var_reg + 0.1*prot_cov_reg
+        return loss.mean()
         
     def forward_class_balanced(self, protos, proj2, target2, proj3, target3):
         # Normalize and concatenate features
