@@ -172,21 +172,18 @@ class CropConLoss(torch.nn.Module):
         self.bcl_config = bcl_config
         self.device = device
 
-    def forward(self, protos, proj2, target2, proj3, target3):
-        if self.bcl_config == "original":
-            return self.forward_original(protos, proj2, target2, proj3, target3)
-        elif self.bcl_config == "class_balanced":
-            return self.forward_class_balanced(protos, proj2, target2, proj3, target3)
-        elif self.bcl_config == "prototypes":
-            return self.forward_only_prototypes(protos, proj2, target2, proj3, target3)
-        elif self.bcl_config == "decoupled":
-            return self.forward_decoupled(protos, proj2, target2, proj3, target3)
+    def forward(self, protos, proj2, target2, proj3=None, target3=None):
 
-    def forward_original(self, protos, proj2, target2, proj3, target3):
-        # Normalize and combine features
-        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)  # [M, D]
-        labels = torch.cat([target2, target3], dim=0).long()                # [M]
+        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1) if proj3 is not None else F.normalize(proj2, p=2, dim=-1)  # [M, D]
+        labels = torch.cat([target2, target3], dim=0).long() if proj3 is not None else target2.long()               # [M]
         protos = F.normalize(protos, p=2, dim=-1)                           # [C, D]
+        
+        if self.bcl_config == "original":
+            return self.forward_original(protos, feats, labels)
+        elif self.bcl_config == "class_balanced":
+            return self.forward_class_balanced(protos, feats, labels)
+
+    def forward_original(self, protos, feats, labels):                       # [C, D]
 
         # Filter out ignored labels
         valid_mask = labels != self.ignore_index
@@ -235,13 +232,17 @@ class CropConLoss(torch.nn.Module):
 
         # === Final loss ===
         loss = -torch.log(numer / (denom + 1e-12))                          # [M]
-        return loss.mean()
+
+        # === Prototypes Regularization ===
+        prot_var_reg = torch.sqrt(protos.var(dim=0) + 1e-12)
+        prot_var_reg = torch.mean(F.relu(1 - prot_var_reg))
+
+        prot_cov_reg = ((protos.T @ protos) / (C - 1)).square()
+        prot_cov_reg = (prot_cov_reg.sum() - prot_cov_reg.diagonal().sum()) / D
+
+        return loss.mean() + prot_var_reg + 0.1 * prot_cov_reg
         
-    def forward_class_balanced(self, protos, proj2, target2, proj3, target3):
-        # Normalize and concatenate features
-        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)  # [2B, D]
-        labels = torch.cat([target2, target3], dim=0).long()                # [2B]
-        protos = F.normalize(protos, p=2, dim=-1)                           # [C, D]
+    def forward_class_balanced(self, protos, feats, labels):
 
         B2 = feats.size(0)
         C = protos.size(0)
@@ -286,77 +287,6 @@ class CropConLoss(torch.nn.Module):
 
         # Final loss
         loss = -mean_log_prob_pos
-        return loss.mean()
-    
-    def forward_only_prototypes(self, protos, proj2, target2, proj3, target3):
-        # Normalize and combine features
-        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)  # [M, D]
-        labels = torch.cat([target2, target3], dim=0).long()                # [M]
-        protos = F.normalize(protos, p=2, dim=-1)                           # [C, D]
-
-        # Filter out ignored labels
-        valid_mask = labels != self.ignore_index
-        feats = feats[valid_mask]
-        labels = labels[valid_mask]
-
-        M, D = feats.shape
-        if M == 0:
-            return torch.tensor(0.0, device=self.device, requires_grad=True)
-
-        C = protos.size(0)
-
-        labels_all = torch.cat([labels, torch.arange(C, device=self.device)]) 
-        cls_freq = torch.bincount(labels_all, minlength=C).float()         
-        cls_freq = cls_freq + 1e-12  # avoid division by zero
-        proto_weights = cls_freq.unsqueeze(0).expand(M, -1)  
-
-        # Similarity matrix
-        proto_sim = torch.matmul(feats, protos.T) / self.temperature        # [M, C]
-
-        # Numerator: class prototype
-        numer_proto = torch.gather(torch.exp(proto_sim), 1, labels.view(-1,1))  # [M, 1]
-        numer = numer_proto.squeeze(1)            # [M]
-
-        # Denominator: all feats + all protos
-        denom = (torch.exp(proto_sim) / proto_weights).sum(dim=1)              # [M]
-
-        loss = -torch.log(numer / (denom + 1e-12))                          # [M]
-        return loss.mean()
-
-    def forward_decoupled(self, protos, proj2, target2, proj3, target3):
-        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1)  # [M, D]
-        labels = torch.cat([target2, target3], dim=0).long()                # [M]
-        protos = F.normalize(protos, p=2, dim=-1)                           # [C, D]
-
-        valid_mask = labels != self.ignore_index
-        feats = feats[valid_mask]
-        labels = labels[valid_mask]
-
-        M, D = feats.shape
-        C = protos.size(0)
-        
-        sim_feats = torch.matmul(feats, feats.T) / self.temperature         # [M, M]
-        sim_protos = torch.matmul(feats, protos.T) / self.temperature       # [M, C]
-
-        eye = torch.eye(M, device=self.device, dtype=torch.bool)
-        sim_feats = sim_feats.masked_fill(eye, -float('inf'))
-
-        # Positive masks
-        match_matrix = labels.unsqueeze(1) == labels.unsqueeze(0)          # [M, M]
-        proto_match = F.one_hot(labels, num_classes=C).bool()              # [M, C]
-
-        # Numerators
-        numer_feat = torch.exp(sim_feats) * match_matrix                   # [M, M]
-        numer_proto = torch.exp(sim_protos)[proto_match].unsqueeze(1)     # [M, 1]
-        numerator = numer_feat.sum(dim=1) + numer_proto.squeeze(1)
-        numerator = torch.clamp(numerator, min=1e-12)
-
-        # Denominator: exclude positives
-        denom_feat = torch.exp(sim_feats) * (~match_matrix)
-        denom_proto = torch.exp(sim_protos).masked_fill(proto_match, 0.0)
-        denominator = denom_feat.sum(dim=1) + denom_proto.sum(dim=1)
-
-        loss = -torch.log(numerator / (denominator + 1e-12))
         return loss.mean()
 
     def __str__(self):

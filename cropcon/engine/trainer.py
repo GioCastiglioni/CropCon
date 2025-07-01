@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader, Subset
 from cropcon.utils.logger import RunningAverageMeter, sec_to_hm
 from cropcon.utils.losses import CropConLoss
 from cropcon.utils.utils import RandomChannelDropout, ConsistentTransform
+from scipy.ndimage import label as lbl
 
 class Trainer:
     def __init__(
@@ -163,33 +164,6 @@ class Trainer:
         del metrics
         del used_time
         torch.cuda.empty_cache()
-
-    def extract_classwise_representations(self, feature_maps, mask):
-        B, C, Hf, Wf = feature_maps.shape
-        features = []
-        targets = []
-
-        for b in range(B):
-            fmap = feature_maps[b]           # [C, Hf, Wf]
-            class_ids = torch.unique(mask[b])
-
-            for cls_id in class_ids:
-                cls_mask = (mask[b] == cls_id)  # [Hf, Wf]
-                if cls_mask.sum() == 0:
-                    continue  # just in case
-
-                cls_mask_flat = cls_mask.view(1, -1)                   # [1, Hf*Wf]
-                fmap_flat = fmap.view(C, -1)                           # [C, Hf*Wf]
-                selected_features = fmap_flat[:, cls_mask_flat[0]]    # [C, N_pixels]
-                pooled_vector = selected_features.mean(dim=1)         # [C]
-                
-                features.append(pooled_vector)
-                targets.append(cls_id.item())
-
-        feature_tensor = torch.stack(features, dim=0)   # [P, C]
-        target_tensor = torch.tensor(targets, device=feature_maps.device)   # [P]
-
-        return feature_tensor, target_tensor
     
     def temporal_transform(self, x: torch.Tensor, mask: torch.Tensor):
         """
@@ -280,6 +254,45 @@ class Trainer:
         proto_flags = self.prototype_initialized.float()
         torch.distributed.all_reduce(proto_flags, op=torch.distributed.ReduceOp.MAX)
         self.prototype_initialized = proto_flags.bool()
+
+    def extract_crop_features(self, features: torch.Tensor, gt_masks: torch.Tensor, ignore_index: int = 19):
+        """
+        features: [B, D, H, W]
+        gt_masks: [B, H, W] with values in [0, C-1] or ignore_index
+        Returns:
+            crop_features: [N, D] where N is the total number of crops across the batch
+            crop_labels: [N] with the class label of each crop
+        """
+        B, D, H, W = features.shape
+        crop_vecs = []
+        crop_labels = []
+
+        for b in range(B):
+            gt_mask = gt_masks[b].cpu().numpy()
+            feat = features[b]  # [D, H, W]
+
+            for class_id in np.unique(gt_mask):
+                if class_id == ignore_index:
+                    continue
+                class_mask = (gt_mask == class_id).astype(np.uint8)
+                labeled, num_features = lbl(class_mask)
+
+                for i in range(1, num_features + 1):
+                    crop_mask_np = (labeled == i)  # [H, W]
+                    if crop_mask_np.sum() < 1:
+                        continue
+                    crop_mask = torch.from_numpy(crop_mask_np).to(features.device)  # [H, W]
+                    crop_feats = feat[:, crop_mask]  # [D, N]
+                    crop_avg = crop_feats.mean(dim=1)  # [D]
+                    crop_vecs.append(crop_avg)
+                    crop_labels.append(int(class_id))
+
+        if len(crop_vecs) == 0:
+            return torch.empty(0, D).to(features.device), torch.empty(0, dtype=torch.long).to(features.device)
+
+        crop_features = torch.stack(crop_vecs, dim=0)  # [N, D]
+        crop_labels = torch.tensor(crop_labels, device=features.device, dtype=torch.long)  # [N]
+        return crop_features, crop_labels
     
     def train_one_epoch(self, epoch: int) -> None:
         """Train model for one epoch.
@@ -309,49 +322,29 @@ class Trainer:
                     with torch.no_grad():
                         feat_v1 = self.model.module.forward_features(image["v1"],
                                                     batch_positions=data["metadata"])
-                        feat_con1, target_con1 = self.extract_classwise_representations(
+                        feat_con1, target_con1 = self.extract_crop_features(
                             feat_v1,
-                            target.unsqueeze(1).float()
+                            target.float()
                             )
                         new_prototype = F.normalize(self.compute_class_prototypes(feat_con1, target_con1), p=2, dim=-1)
                         self.update_prototypes_distributed(new_prototype, target_con1, epoch)
 
+                        image["v2"], target_transformed2 = self.temporal_transform(image["v1"].detach().clone(), target.clone())
+
                     projected_prototypes = self.prototype_projector(self.prototypes.detach())
 
-                    with torch.no_grad():
-                        image["v2"], target_transformed2 = self.temporal_transform(image["v1"].detach().clone(), target.clone())
-                        image["v3"], target_transformed3 = self.temporal_transform(image["v1"].detach().clone(), target.clone())
-
-                    feats = self.model.module.forward_features(torch.cat((image["v2"],image["v3"]), dim=0),
-                                                batch_positions=data["metadata"].repeat(2, 1))
-
-                    feat_v2 = feats[:image["v2"].shape[0]]
-                    feat_con2, target_con2 = self.extract_classwise_representations(
+                    feat_v2 = self.model.module.forward_features(image["v2"],
+                                                batch_positions=data["metadata"])
+                    feat_con2, target_con2 = self.extract_crop_features(
                         feat_v2,
-                        target_transformed2.unsqueeze(1).float()
+                        target_transformed2.float()
                         )
 
-                    feat_v3  = feats[image["v2"].shape[0]:]
-                    feat_con3, target_con3 = self.extract_classwise_representations(
-                        feat_v3,
-                        target_transformed3.unsqueeze(1).float()
-                        )
+                    proj2 = self.projector(feat_con2)
 
-                    projs = self.projector(torch.cat((feat_con2,feat_con3), dim=0))
+                    loss_contrastive = self.contrastive(projected_prototypes, proj2, target_con2)
 
-                    proj2 = projs[:image["v2"].shape[0]]
-                    proj3 = projs[image["v2"].shape[0]:]
-
-                    loss_contrastive = self.contrastive(projected_prototypes, proj2, target_con2, proj3, target_con3)
-
-                    # === Prototypes Regularization ===
-                    prot_var_reg = torch.sqrt(projected_prototypes.var(dim=0) + 1e-12)
-                    prot_var_reg = torch.mean(F.relu(1 - prot_var_reg))
-
-                    prot_cov_reg = ((projected_prototypes.T @ projected_prototypes) / (self.n_classes - 1)).square()
-                    prot_cov_reg = (prot_cov_reg.sum() - prot_cov_reg.diagonal().sum()) / self.projection_dim
-
-                    loss = (1 - self.alpha)*loss_ce + self.alpha*loss_contrastive + prot_var_reg + 0.1*prot_cov_reg
+                    loss = loss_ce + self.alpha*loss_contrastive
 
                 else: loss = loss_ce
                 
