@@ -174,28 +174,31 @@ def main(cfg: DictConfig) -> None:
             output_device=local_rank,
             find_unused_parameters=cfg.finetune,
         )
-
-    projector = torch.nn.parallel.DistributedDataParallel(
-        ProjectionHead(
-            embed_dim=decoder.module.dec_topology[0],
-            mlp_hidden_dim=512,
-            projection_dim=cfg.projection_dim,
-            attention=False).to(device),
-            device_ids=[local_rank],
-            output_device=local_rank,
-            find_unused_parameters=False,
-        )            
-        
-    prototype_projector = torch.nn.parallel.DistributedDataParallel(
-        ProjectionHead(
-            embed_dim=decoder.module.dec_topology[0],
-            mlp_hidden_dim=512,
-            projection_dim=cfg.projection_dim,
-            attention=True).to(device),
-            device_ids=[local_rank],
-            output_device=local_rank,
-            find_unused_parameters=False,
-        )
+    if cfg.task.trainer.alpha != 0.0:
+        projector = torch.nn.parallel.DistributedDataParallel(
+            ProjectionHead(
+                embed_dim=decoder.module.dec_topology[0],
+                mlp_hidden_dim=512,
+                projection_dim=cfg.projection_dim,
+                attention=False).to(device),
+                device_ids=[local_rank],
+                output_device=local_rank,
+                find_unused_parameters=False,
+            )
+            
+        prototype_projector = torch.nn.parallel.DistributedDataParallel(
+            ProjectionHead(
+                embed_dim=decoder.module.dec_topology[0],
+                mlp_hidden_dim=512,
+                projection_dim=cfg.projection_dim,
+                attention=True).to(device),
+                device_ids=[local_rank],
+                output_device=local_rank,
+                find_unused_parameters=False,
+            )
+    else: 
+        projector = None
+        prototype_projector = None
 
     logger.info(
             "Built {} for with {} encoder.".format(
@@ -313,11 +316,12 @@ def main(cfg: DictConfig) -> None:
         criterion = instantiate(cfg.criterion)
 
         params = [
-            {'params': non_encoder_params(decoder.module), 'lr': cfg.optimizer.lr},
-            {'params': prototype_projector.parameters()},
-            {'params': projector.parameters()}]
+            {'params': non_encoder_params(decoder.module), 'lr': cfg.optimizer.lr},]
         if cfg.finetune:
             params.append({'params': decoder.module.encoder.parameters(), 'lr': cfg.optimizer.lr * cfg.ft_rate})
+        if cfg.task.trainer.alpha != 0:
+            params.append({'params': prototype_projector.parameters()})
+            params.append({'params': projector.parameters()})
 
         optimizer = instantiate(cfg.optimizer, params=None)
         optimizer = optimizer(params=params)

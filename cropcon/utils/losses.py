@@ -76,6 +76,7 @@ class FocalLoss(torch.nn.Module):
         self.loss = torch.nn.CrossEntropyLoss(
             ignore_index=ignore_index, reduction='none', # weight=loss_weights, 
         )
+        self.ignore_index = ignore_index
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         # Compute the cross-entropy loss
