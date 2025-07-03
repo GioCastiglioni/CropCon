@@ -417,7 +417,7 @@ class Trainer:
             checkpoint (dict[str, dict  |  int] | None, optional): already prepared checkpoint dict. Defaults to None.
         """
         if self.rank != 0:
-            torch.distributed.barrier()
+            torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
             return
         checkpoint = self.get_checkpoint(epoch) if checkpoint is None else checkpoint
         suffix = "_best" if is_best else f"{epoch}_final" if is_final else f"{epoch}"
@@ -426,7 +426,7 @@ class Trainer:
         self.logger.info(
             f"Epoch {epoch} | Training checkpoint saved at {checkpoint_path}"
         )
-        torch.distributed.barrier()
+        torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
         return
 
     def load_model(self, resume_path: str | pathlib.Path) -> None:

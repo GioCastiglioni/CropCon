@@ -118,7 +118,7 @@ def main(cfg: DictConfig) -> None:
         task_name = exp_info["task"]
         exp_dir = pathlib.Path(cfg.work_dir) / exp_name
         exp_dir.mkdir(parents=True, exist_ok=True)
-        torch.distributed.barrier()
+        torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
         logger_path = exp_dir / "train.log"
         config_log_dir = exp_dir / "configs"
         config_log_dir.mkdir(exist_ok=True)
@@ -254,7 +254,7 @@ def main(cfg: DictConfig) -> None:
                     torch.save(indices, indices_file)
 
             if torch.distributed.is_available() and torch.distributed.is_initialized():
-                torch.distributed.barrier()
+                torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
 
             indices = torch.load(indices_file, weights_only=False)
 
