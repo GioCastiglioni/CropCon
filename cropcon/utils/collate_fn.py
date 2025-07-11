@@ -53,7 +53,8 @@ def get_collate_fn(modalities: list[str]) -> Callable:
                 batch_out["metadata"] = torch.stack([x["metadata"] for x in batch])
             else:
                 batch_out["metadata"] = torch.stack([torch.linspace(0, 999, batch_out["image"][modalities[0]].shape[2]).long() for _ in range(batch_out["image"][modalities[0]].shape[0])])
-            
+        else:     
+            batch_out["metadata"] = torch.stack([torch.linspace(0, 999, batch_out["image"][modalities[0]].shape[2]).long() for _ in range(batch_out["image"][modalities[0]].shape[0])])
         return batch_out
 
     return collate_fn

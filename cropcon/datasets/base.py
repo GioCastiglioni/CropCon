@@ -15,6 +15,7 @@ class RawGeoFMDataset(Dataset):
         dataset_name: str,
         multi_modal: bool,
         multi_temporal: int,
+        support_test: bool,
         root_path: str,
         classes: list,
         num_classes: int,
@@ -78,6 +79,7 @@ class RawGeoFMDataset(Dataset):
         self.download_url = download_url
         self.auto_download = auto_download
         self.fold_config = fold_config
+        self.support_test = support_test
 
         if not os.path.exists(self.root_path):
             self.download(self)

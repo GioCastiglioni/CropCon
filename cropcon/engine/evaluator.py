@@ -108,7 +108,7 @@ class SegEvaluator(Evaluator):
             exp_dir: str | Path,
             device: torch.device,
             use_wandb: bool = False,
-            dataset_name: str = 'PASTIS-HD'
+            dataset_name: str = ""
     ):
         super().__init__(val_loader, distribution, exp_dir, device, use_wandb, dataset_name)
 

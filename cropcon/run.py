@@ -361,23 +361,71 @@ def main(cfg: DictConfig) -> None:
 
         trainer.train()
 
-    model_dict = torch.load(get_best_model_ckpt_path(exp_dir), map_location=device, weights_only=False)
-    
-    logger.info(
-        f"Best_mIoU: {model_dict['mIoU']}\n"
-        f"Best_mF1: {model_dict['mF1']}\n"
-        f"Best_mAcc: {model_dict['mAcc']}\n"
-    )
-
-    if cfg.use_wandb and rank == 0:
-        wandb.log(
-            {
-                "Best_mIoU": model_dict["mIoU"],
-                "Best_mF1": model_dict["mF1"],
-                "Best_mAcc": model_dict["mAcc"]
-            }
+    if cfg.dataset.support_test:
+        # Evaluation
+        test_preprocessor = instantiate(
+            cfg.preprocessing.test,
+            dataset_cfg=cfg.dataset,
+            encoder_cfg=cfg.encoder,
+            _recursive_=False,
         )
-        wandb.finish()
+        # get datasets
+        raw_test_dataset: RawGeoFMDataset = instantiate(cfg.dataset, split="test")
+        test_dataset = GeoFMDataset(raw_test_dataset, test_preprocessor)
+
+        test_loader = DataLoader(
+            test_dataset,
+            sampler=DistributedSampler(test_dataset),
+            batch_size=cfg.test_batch_size,
+            num_workers=cfg.test_num_workers,
+            pin_memory=True,
+            persistent_workers=False,
+            drop_last=False,
+            collate_fn=collate_fn,
+        )
+        test_evaluator: Evaluator = instantiate(
+            cfg.task.evaluator, val_loader=test_loader, exp_dir=exp_dir, device=device,
+            inference_mode= cfg.task.evaluator.inference_mode, #'sliding' if train_run else 'whole',
+            dataset_name=cfg.dataset.dataset_name
+        )
+
+        model_ckpt_path = get_best_model_ckpt_path(exp_dir)
+        metrics, _ = test_evaluator.evaluate(decoder, "test_model", model_ckpt_path)
+
+        logger.info(
+            f"Best_mIoU: {metrics['mIoU']}\n"
+            f"Best_mF1: {metrics['mF1']}\n"
+            f"Best_mAcc: {metrics['mAcc']}\n"
+        )
+
+        if cfg.use_wandb and rank == 0:
+            wandb.log(
+                {
+                    "Best_mIoU": metrics["mIoU"],
+                    "Best_mF1": metrics["mF1"],
+                    "Best_mAcc": metrics["mAcc"]
+                }
+            )
+            wandb.finish()
+
+    else:
+        model_dict = torch.load(get_best_model_ckpt_path(exp_dir), map_location=device, weights_only=False)
+        
+        logger.info(
+            f"Best_mIoU: {model_dict['mIoU']}\n"
+            f"Best_mF1: {model_dict['mF1']}\n"
+            f"Best_mAcc: {model_dict['mAcc']}\n"
+        )
+
+        if cfg.use_wandb and rank == 0:
+            wandb.log(
+                {
+                    "Best_mIoU": model_dict["mIoU"],
+                    "Best_mF1": model_dict["mF1"],
+                    "Best_mAcc": model_dict["mAcc"]
+                }
+            )
+            wandb.finish()
 
     torch.distributed.destroy_process_group()
 

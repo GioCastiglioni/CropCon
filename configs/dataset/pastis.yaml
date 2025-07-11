@@ -7,8 +7,8 @@ auto_download: False
 img_size: 128
 multi_temporal: 6
 multi_modal: True
-#limited_label: False
 fold_config: 1
+support_test: False
 
 # classes
 ignore_index: 19
