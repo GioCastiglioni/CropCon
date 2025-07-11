@@ -101,7 +101,7 @@ class FLAIR(RawGeoFMDataset):
             output["image"] = {"optical": torch.FloatTensor(f.read()).unsqueeze(1)}
 
         with rasterio.open(label_path) as f:
-            output["target"] = torch.LongTensor(f.read()).squeeze()
+            output["target"] = torch.LongTensor(f.read()).squeeze() - 1
 
         return output
 
