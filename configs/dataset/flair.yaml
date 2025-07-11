@@ -1,0 +1,82 @@
+_target_: cropcon.datasets.flair.FLAIR
+dataset_name: FLAIR
+root_path: /home/gcast/datasets/FLAIR
+download_url: null
+auto_download: False
+
+img_size: 512
+multi_temporal: 1
+multi_modal: False
+fold_config: null
+support_test: True
+
+# classes
+ignore_index: 18
+num_classes: 19
+classes: 
+  - building
+  - pervious surface
+  - impervious surface
+  - bare soil
+  - water
+  - coniferous
+  - deciduous
+  - brushwood
+  - vineyard
+  - herbaceous vegetation
+  - agricultural land
+  - plowed land
+  - swimming pool
+  - snow
+  - clear cut
+  - mixed
+  - ligneous
+  - greenhouse
+  - other
+distribution:
+  - 0.0814
+  - 0.0825
+  - 0.1372
+  - 0.0347
+  - 0.0488
+  - 0.0274
+  - 0.1538
+  - 0.0695
+  - 0.0313
+  - 0.1784
+  - 0.1098
+  - 0.0388
+  - 0.0009
+  - 0.0009
+  - 0.0009
+  - 0.0009
+  - 0.0009
+  - 0.0009
+  - 0.0009
+
+bands:
+  optical:
+    - B
+    - G
+    - R
+    - NIR
+    - nDSM
+data_mean:
+  optical:
+  - 105.08
+  - 110.87
+  - 101.82
+  - 106.38
+  - 53.26
+data_std:
+  optical:
+  - 52.17
+  - 45.38
+  - 44.00
+  - 39.69
+  - 79.30
+
+data_min:
+  optical: [0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
+data_max:
+  optical: [0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
