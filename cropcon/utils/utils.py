@@ -145,11 +145,11 @@ class RandomChannelDropout(torch.nn.Module):
 
 
 class ConsistentTransform(torch.nn.Module):
-    def __init__(self, degrees=30, p=0.5):
+    def __init__(self, h_w=128 ,degrees=30, p=0.5):
         super().__init__()
         self.degrees = degrees
         self.transforms = v2.Compose([
-            v2.RandomResizedCrop(size=(128, 128), scale=(0.8, 1.0)),
+            v2.RandomResizedCrop(size=(h_w, h_w), scale=(0.8, 1.0)),
             v2.RandomHorizontalFlip(p=p),
             v2.RandomVerticalFlip(p=p),
             ])
