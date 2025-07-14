@@ -385,7 +385,6 @@ def main(cfg: DictConfig) -> None:
         )
         test_evaluator: Evaluator = instantiate(
             cfg.task.evaluator, val_loader=test_loader, exp_dir=exp_dir, device=device,
-            inference_mode= cfg.task.evaluator.inference_mode, #'sliding' if train_run else 'whole',
             dataset_name=cfg.dataset.dataset_name
         )
 

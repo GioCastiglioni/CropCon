@@ -177,6 +177,10 @@ class SegEvaluator(Evaluator):
         return self.evaluate(model, model_name, model_ckpt_path, logit_compensation)
 
     def compute_metrics(self, confusion_matrix):
+        if self.ignore_index != -1:
+            keep = torch.arange(confusion_matrix.size(0)) != self.ignore_index
+            confusion_matrix = confusion_matrix[keep][:, keep]
+        
         # Calculate IoU for each class
         intersection = torch.diag(confusion_matrix)
         union = confusion_matrix.sum(dim=1) + confusion_matrix.sum(dim=0) - intersection
@@ -202,42 +206,56 @@ class SegEvaluator(Evaluator):
 
         # Prepare the metrics dictionary
         metrics = {
-            "IoU": [iou[i].item() for i in range(self.num_classes)],
+            "IoU": [iou[i].item() for i in range(confusion_matrix.size(0))],
             "mIoU": miou,
-            "F1": [f1[i].item() for i in range(self.num_classes)],
+            "F1": [f1[i].item() for i in range(confusion_matrix.size(0))],
             "mF1": mf1,
             "mAcc": macc,
-            "Precision": [precision[i].item() for i in range(self.num_classes)],
-            "Recall": [recall[i].item() for i in range(self.num_classes)],
+            "Precision": [precision[i].item() for i in range(confusion_matrix.size(0))],
+            "Recall": [recall[i].item() for i in range(confusion_matrix.size(0))],
         }
 
         return metrics
 
     def log_metrics(self, metrics):
-        def format_metric(name, values, mean_value):
+        def format_metric(name, values, mean_value, classes):
             header = f"------- {name} --------\n"
             metric_str = (
-                    "\n".join(
-                        c.ljust(self.max_name_len, " ") + "\t{:>7}".format("%.3f" % num)
-                        for c, num in zip(self.classes, values)
-                    )
-                    + "\n"
+                "\n".join(
+                    c.ljust(self.max_name_len, " ") + "\t{:>7}".format("%.3f" % num)
+                    for c, num in zip(classes, values)
+                )
+                + "\n"
             )
             mean_str = (
-                    "-------------------\n"
-                    + "Mean".ljust(self.max_name_len, " ")
-                    + "\t{:>7}".format("%.3f" % mean_value)
+                "-------------------\n"
+                + "Mean".ljust(self.max_name_len, " ")
+                + "\t{:>7}".format("%.3f" % mean_value)
             )
             return header + metric_str + mean_str
 
-        iou_str = format_metric("IoU", metrics["IoU"], metrics["mIoU"])
-        f1_str = format_metric("F1-score", metrics["F1"], metrics["mF1"])
+        # Filter out ignored class if necessary
+        if self.ignore_index != -1:
+            filtered_classes = [c for i, c in enumerate(self.classes) if i != self.ignore_index]
+            iou = [v for i, v in enumerate(metrics["IoU"]) if i != self.ignore_index]
+            f1 = [v for i, v in enumerate(metrics["F1"]) if i != self.ignore_index]
+            precision = [v for i, v in enumerate(metrics["Precision"]) if i != self.ignore_index]
+            recall = [v for i, v in enumerate(metrics["Recall"]) if i != self.ignore_index]
+        else:
+            filtered_classes = self.classes
+            iou = metrics["IoU"]
+            f1 = metrics["F1"]
+            precision = metrics["Precision"]
+            recall = metrics["Recall"]
 
-        precision_mean = torch.tensor(metrics["Precision"]).mean().item()
-        recall_mean = torch.tensor(metrics["Recall"]).mean().item()
+        iou_str = format_metric("IoU", iou, metrics["mIoU"], filtered_classes)
+        f1_str = format_metric("F1-score", f1, metrics["mF1"], filtered_classes)
 
-        precision_str = format_metric("Precision", metrics["Precision"], precision_mean)
-        recall_str = format_metric("Recall", metrics["Recall"], recall_mean)
+        precision_mean = torch.tensor(precision).mean().item()
+        recall_mean = torch.tensor(recall).mean().item()
+
+        precision_str = format_metric("Precision", precision, precision_mean, filtered_classes)
+        recall_str = format_metric("Recall", recall, recall_mean, filtered_classes)
 
         macc_str = f"Mean Accuracy: {metrics['mAcc']:.3f} \n"
 
@@ -255,19 +273,19 @@ class SegEvaluator(Evaluator):
                     f"{self.split}_mAcc": metrics["mAcc"],
                     **{
                         f"{self.split}_IoU_{c}": v
-                        for c, v in zip(self.classes, metrics["IoU"])
+                        for c, v in zip(filtered_classes, iou)
                     },
                     **{
                         f"{self.split}_F1_{c}": v
-                        for c, v in zip(self.classes, metrics["F1"])
+                        for c, v in zip(filtered_classes, f1)
                     },
                     **{
                         f"{self.split}_Precision_{c}": v
-                        for c, v in zip(self.classes, metrics["Precision"])
+                        for c, v in zip(filtered_classes, precision)
                     },
                     **{
                         f"{self.split}_Recall_{c}": v
-                        for c, v in zip(self.classes, metrics["Recall"])
+                        for c, v in zip(filtered_classes, recall)
                     },
                 }
             )

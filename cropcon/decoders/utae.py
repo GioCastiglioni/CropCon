@@ -90,6 +90,7 @@ class UTAE(Decoder):
     def forward_features(self, input: torch.Tensor, batch_positions=None) -> torch.Tensor:
 
         input = input.permute(0,2,1,3,4)
+        B, T, C, H, W = input.shape
 
         pad_mask = (
             (input == self.pad_value).all(dim=-1).all(dim=-1).all(dim=-1)
@@ -100,15 +101,30 @@ class UTAE(Decoder):
         for i in range(len(self.topology) - 1):
             out = self.encoder.down_blocks[i].smart_forward(feature_maps[-1])
             feature_maps.append(out)
-        # TEMPORAL ENCODER
-        out, att = self.tmap(
-            feature_maps[-1].permute(0,2,1,3,4), batch_positions=batch_positions.to(out.device), pad_mask=pad_mask
-        )
-
-        for i in range(len(self.topology) - 1):
-            skip = self.temporal_aggregator(
-                feature_maps[-(i + 2)], pad_mask=pad_mask, attn_mask=att
+        if T > 1:
+            # TEMPORAL ENCODER
+            out, att = self.tmap(
+                feature_maps[-1].permute(0, 2, 1, 3, 4),  # (B, C, T, H, W)
+                batch_positions=batch_positions.to(out.device),
+                pad_mask=pad_mask
             )
+            use_temporal_aggregation = True
+        else:
+            # Skip temporal encoder and use last spatial feature map directly
+            out = feature_maps[-1].squeeze(dim=1)  # (B, C, H, W)
+            att = None
+            use_temporal_aggregation = False
+
+        # DECODER
+        for i in range(len(self.topology) - 1):
+            if use_temporal_aggregation:
+                skip = self.temporal_aggregator(
+                    feature_maps[-(i + 2)],
+                    pad_mask=pad_mask,
+                    attn_mask=att
+                )
+            else:
+                skip = feature_maps[-(i + 2)].squeeze(dim=1)
             out = self.up_blocks[i](out, skip)
 
         return out

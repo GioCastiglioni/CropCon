@@ -11,8 +11,8 @@ fold_config: null
 support_test: True
 
 # classes
-ignore_index: 18
-num_classes: 19
+ignore_index: 12
+num_classes: 13
 classes: 
   - building
   - pervious surface
@@ -26,12 +26,6 @@ classes:
   - herbaceous vegetation
   - agricultural land
   - plowed land
-  - swimming pool
-  - snow
-  - clear cut
-  - mixed
-  - ligneous
-  - greenhouse
   - other
 distribution:
   - 0.0814
@@ -46,13 +40,7 @@ distribution:
   - 0.1784
   - 0.1098
   - 0.0388
-  - 0.0009
-  - 0.0009
-  - 0.0009
-  - 0.0009
-  - 0.0009
-  - 0.0009
-  - 0.0009
+  - 0.0064
 
 bands:
   optical:
