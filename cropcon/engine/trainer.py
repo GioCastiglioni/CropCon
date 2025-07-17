@@ -161,6 +161,9 @@ class Trainer:
         self.training_stats["eval_time"].update(used_time)
         self.save_best_checkpoint(metrics, self.n_epochs)
 
+        # save last model
+        self.save_model(self.n_epochs, is_final=True)
+
         del metrics
         del used_time
         torch.cuda.empty_cache()
