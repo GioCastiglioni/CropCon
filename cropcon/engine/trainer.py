@@ -19,6 +19,7 @@ from cropcon.utils.logger import RunningAverageMeter, sec_to_hm
 from cropcon.utils.losses import CropConLoss
 from cropcon.utils.utils import RandomChannelDropout, ConsistentTransform
 from scipy.ndimage import label as lbl
+from grokfast import gradfilter_ma, gradfilter_ema
 
 class Trainer:
     def __init__(
@@ -89,6 +90,7 @@ class Trainer:
         self.best_metric_key = best_metric_key
         self.projection_dim=projection_dim
         self.bcl_config=bcl_config
+        self.grokfast = False
 
         self.training_stats = {
             name: RunningAverageMeter(length=self.batch_per_epoch)
@@ -139,6 +141,9 @@ class Trainer:
     def train(self) -> None:
         """Train the model for n_epochs then evaluate the model and save the best model."""
         # end_time = time.time()
+        grads=None
+        grads_proj=None
+        grads_mhsa=None
         for epoch in range(self.start_epoch, self.n_epochs):
             # train the network for one epoch
             if epoch % self.eval_interval == 0:
@@ -153,7 +158,7 @@ class Trainer:
             # set sampler
             self.t = time.time()
             self.train_loader.sampler.set_epoch(epoch)
-            self.train_one_epoch(epoch)
+            grads, grads_proj, grads_mhsa = self.train_one_epoch(epoch, grads=grads, grads_proj=grads_proj, grads_mhsa=grads_mhsa)
             if epoch % self.ckpt_interval == 0 and epoch != self.start_epoch: self.save_model(epoch)
             torch.cuda.empty_cache()
 
@@ -297,7 +302,7 @@ class Trainer:
         crop_labels = torch.tensor(crop_labels, device=features.device, dtype=torch.long)  # [N]
         return crop_features, crop_labels
     
-    def train_one_epoch(self, epoch: int) -> None:
+    def train_one_epoch(self, epoch: int, grads=None, grads_proj=None, grads_mhsa=None) -> None:
         """Train model for one epoch.
 
         Args:
@@ -359,6 +364,12 @@ class Trainer:
                 )
 
             self.scaler.scale(loss).backward()
+            if self.grokfast:
+                self.scaler.unscale_(self.optimizer)
+                grads = gradfilter_ema(self.model, grads=grads)
+                if self.alpha > 0.0:
+                    grads_proj = gradfilter_ema(self.projector, grads=grads_proj)
+                    grads_mhsa = gradfilter_ema(self.prototype_projector, grads=grads_mhsa)
             self.scaler.step(self.optimizer)
             self.scaler.update()
             self.training_stats['loss'].update(loss.item())
@@ -385,6 +396,7 @@ class Trainer:
 
             self.training_stats["batch_time"].update(time.time() - end_time)
             end_time = time.time()
+        return grads, grads_proj, grads_mhsa
 
     def get_checkpoint(self, epoch: int) -> dict[str, dict | int]:
         """Create a checkpoint dictionary, containing references to the pytorch tensors.
