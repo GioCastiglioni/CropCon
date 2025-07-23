@@ -32,10 +32,6 @@ from cropcon.utils.utils import (
     LARS
 )
 
-print(f"Available GPUs: {torch.cuda.device_count()}")
-for i in range(torch.cuda.device_count()):
-    print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
-
 def get_shared_exp_info(hydra_config: HydraConf, is_distributed=False, rank=0) -> dict[str, str]:
     choices = OmegaConf.to_container(hydra_config.runtime.choices)
     cfg_hash = hashlib.sha1(
