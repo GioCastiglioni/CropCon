@@ -44,9 +44,9 @@ distribution:
 
 bands:
   optical:
-    - B
-    - G
-    - R
+    - B2
+    - B3
+    - B4
     - NIR
     - nDSM
 data_mean:
