@@ -19,7 +19,7 @@ class ResNet18(Encoder):
     ):
         super().__init__(
             model_name="ResNet18",
-            encoder_weights=encoder_weights,  # no pre-trained weights, train from scratch
+            encoder_weights=encoder_weights,
             input_bands=input_bands,
             input_size=input_size,
             embed_dim=0,
@@ -56,7 +56,39 @@ class ResNet18(Encoder):
         x3 = self.layer2(x2)     # 128, H/8
         x4 = self.layer3(x3)     # 256, H/16
         x5 = self.layer4(x4)     # 512, H/32
-        return [x5, x4, x3, x2]
+        return [x2, x3, x4, x5]
 
-    def load_encoder_weights(self, logger: Logger, from_scratch: bool = True) -> None:
-        pass
+    def load_encoder_weights(self, logger: Logger, from_scratch: bool = False) -> None:
+        if from_scratch or self.encoder_weights is None:
+            logger.info("Training encoder from scratch.")
+            return
+
+        logger.info(f"Loading encoder weights from: {self.encoder_weights}")
+        
+        state_dict = torch.load(self.encoder_weights, map_location="cpu")["state_dict"]
+
+        # Remove 'module.encoder_q.' prefix from keys
+        new_state_dict = {
+            k.replace("module.encoder_q.", ""): v
+            for k, v in state_dict.items()
+            if k.startswith("module.encoder_q.") and not k.startswith("module.encoder_q.fc")
+        }
+
+        # Construct a temporary torch model to use `load_state_dict`
+        dummy_model = models.resnet18(weights=None)
+        dummy_model.conv1 = nn.Conv2d(13, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
+        # Load weights
+        missing_keys, unexpected_keys = dummy_model.load_state_dict(new_state_dict, strict=False)
+
+        # Now copy weights layer by layer to your custom class
+        self.initial[0].load_state_dict(dummy_model.conv1.state_dict())  # conv1
+        self.initial[1].load_state_dict(dummy_model.bn1.state_dict())    # bn1
+        # ReLU has no weights
+        self.maxpool = dummy_model.maxpool
+        self.layer1.load_state_dict(dummy_model.layer1.state_dict())
+        self.layer2.load_state_dict(dummy_model.layer2.state_dict())
+        self.layer3.load_state_dict(dummy_model.layer3.state_dict())
+        self.layer4.load_state_dict(dummy_model.layer4.state_dict())
+
+        logger.info("Encoder weights successfully loaded into ResNet18.")
