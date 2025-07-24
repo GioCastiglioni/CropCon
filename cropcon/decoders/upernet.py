@@ -326,8 +326,8 @@ class SegMTUPerNet(SegUPerNet):
                 return [ltae_in_channels for _ in encoder.output_dim]
         return encoder.output_dim
 
-    def forward(
-        self, img: dict[str, torch.Tensor], output_shape: torch.Size | None = None
+    def forward_features(
+        self, img: dict[str, torch.Tensor], batch_positions=None, output_shape: torch.Size | None = None, return_feats=False
     ) -> torch.Tensor:
         """Compute the segmentation output for multi-temporal data.
 
@@ -371,6 +371,17 @@ class SegMTUPerNet(SegUPerNet):
 
         feat = self.neck(feats)
         feat = self._forward_feature(feat)
+        return feat
+
+
+    def forward(
+        self, img: dict[str, torch.Tensor], batch_positions=None, output_shape: torch.Size | None = None, return_feats=False
+    ) -> torch.Tensor:
+
+        if type(img) is dict: pass
+        else: img = {'optical': img}
+
+        feat = self.forward_features(img, batch_positions, output_shape, return_feats)
         feat = self.dropout(feat)
         output = self.conv_seg(feat)
 
