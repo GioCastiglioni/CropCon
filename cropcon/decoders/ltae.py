@@ -211,7 +211,7 @@ class LTAE2d(nn.Module):
                 .repeat((1, 1, 1, w))
             )  # BxTxHxW
             bp = bp.permute(0, 2, 3, 1).contiguous().view(sz_b * h * w, seq_len)
-            out = out + self.positional_encoder(bp)
+            out = out + self.positional_encoder(bp.to(out.device))
 
         out, attn = self.attention_heads(out, pad_mask=pad_mask)
 

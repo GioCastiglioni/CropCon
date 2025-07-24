@@ -342,6 +342,9 @@ class SegMTUPerNet(SegUPerNet):
         Returns:
             torch.Tensor: output tensor of shape (B, num_classes, H', W') with (H' W') coressponding to the output_shape.
         """
+        if type(img) is dict: pass
+        else: img = {'optical': img}
+
         # If the encoder handles multi_temporal we feed it with the input
         if self.encoder.multi_temporal:
             if not self.finetune:
@@ -378,18 +381,15 @@ class SegMTUPerNet(SegUPerNet):
         self, img: dict[str, torch.Tensor], batch_positions=None, output_shape: torch.Size | None = None, return_feats=False
     ) -> torch.Tensor:
 
-        if type(img) is dict: pass
-        else: img = {'optical': img}
-
         feat = self.forward_features(img, batch_positions, output_shape, return_feats)
         feat = self.dropout(feat)
         output = self.conv_seg(feat)
 
-        if output_shape is None:
-            output_shape = img[list(img.keys())[0]].shape[-2:]
+        #if output_shape is None:
+        #    output_shape = img[list(img.keys())[0]].shape[-2:]
 
         # interpolate to the target spatial dims
-        output = F.interpolate(output, size=output_shape, mode="bilinear")
+        #output = F.interpolate(output, size=output_shape, mode="bilinear")
 
         return output
     
