@@ -835,7 +835,7 @@ class ResizeToEncoder(Resize):
         self,
         interpolation=T.InterpolationMode.BILINEAR,
         antialias: Optional[bool] = True,
-        resize_target: bool = False,
+        resize_target: bool = True,
         **meta,
     ) -> None:
         """Initialize the ResizeToEncoder preprocessor.

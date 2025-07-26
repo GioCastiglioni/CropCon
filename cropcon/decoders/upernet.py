@@ -227,8 +227,19 @@ class SegUPerNet(Decoder):
 
         return feat
     
-    def forward_features(self, x):
-        return self.forward_fmaps(img)
+    def forward_features(self, x, batch_positions=None):
+
+        if type(x) is dict: pass
+        else: x = {'optical': x}
+
+        feat = self.forward_fmaps(x)
+        feat = self.dropout(feat)
+        
+        output_shape = x[list(x.keys())[0]].shape[-2:]
+
+        feat = F.interpolate(feat, size=output_shape, mode="bilinear", align_corners=False)
+        
+        return feat
 
     def forward(
         self, img: dict[str, torch.Tensor], output_shape: torch.Size | None = None, batch_positions=None, return_feats=False
@@ -246,17 +257,9 @@ class SegUPerNet(Decoder):
             torch.Tensor: output tensor of shape (B, num_classes, H', W') with (H' W') coressponding to the output_shape.
         """
         
-        feat = self.forward_fmaps(img)
+        feat = self.forward_features(img)
 
-        feat = self.dropout(feat)
         output = self.conv_seg(feat)
-
-        # fixed bug just for optical single modality
-        #if output_shape is None:
-            #output_shape = img[list(img.keys())[0]].shape[-2:]
-
-        # interpolate to the target spatial dims
-        #output = F.interpolate(output, size=output_shape, mode="bilinear")
 
         return output
 
