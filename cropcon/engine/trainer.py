@@ -26,7 +26,6 @@ class Trainer:
         self,
         model: nn.Module,
         projector: nn.Module,
-        prototype_projector: nn.Module,
         train_loader: DataLoader,
         criterion: nn.Module,
         bcl_config: str,
@@ -125,25 +124,15 @@ class Trainer:
 
         self.projector = projector
         
-        self.prototype_projector = prototype_projector
-        
         self.transform = ConsistentTransform(h_w=self.model.module.encoder.input_size, degrees=45, p=0.5).to(self.device)
 
         self.n_classes = self.model.module.num_classes
-        
-        self.prototypes = torch.zeros((self.n_classes, self.model.module.dec_topology[0]), device=self.device).requires_grad_(False)
-        self.prototype_initialized = torch.zeros(self.n_classes, dtype=torch.bool, device=self.device)
-
-        self.momentum_ema = torch.tensor(
-            [0.95 - 0.3*((self.distribution[i]-min(self.distribution))/(max(self.distribution)-min(self.distribution))) for i in range(self.n_classes)]
-            ).to(self.device).requires_grad_(False)
     
     def train(self) -> None:
         """Train the model for n_epochs then evaluate the model and save the best model."""
         # end_time = time.time()
         grads=None
         grads_proj=None
-        grads_mhsa=None
         for epoch in range(self.start_epoch, self.n_epochs):
             # train the network for one epoch
             if epoch % self.eval_interval == 0:
@@ -158,7 +147,7 @@ class Trainer:
             # set sampler
             self.t = time.time()
             self.train_loader.sampler.set_epoch(epoch)
-            grads, grads_proj, grads_mhsa = self.train_one_epoch(epoch, grads=grads, grads_proj=grads_proj, grads_mhsa=grads_mhsa)
+            grads, grads_proj = self.train_one_epoch(epoch, grads=grads, grads_proj=grads_proj)
             if epoch % self.ckpt_interval == 0 and epoch != self.start_epoch: self.save_model(epoch)
             torch.cuda.empty_cache()
 
@@ -204,64 +193,17 @@ class Trainer:
     def compute_class_prototypes(self, feat_con1, target_con1):
         D = feat_con1.size(1)
 
-        # Inicializar acumuladores
-        sums = torch.zeros(self.n_classes, D, device=self.device)
-        counts = torch.zeros(self.n_classes, device=self.device)
+        classes_in_batch = torch.unique(target_con1).long()
+        prototypes = []
 
-        # Sumar todos los vectores por clase
-        for c in torch.unique(target_con1).long():
+        for c in classes_in_batch:
             mask = (target_con1 == c)
-            sums[c] = feat_con1[mask].sum(dim=0)
-            counts[c] = mask.sum()
+            feat_c = feat_con1[mask]
+            prototype_c = feat_c.mean(dim=0)
+            prototypes.append(prototype_c)
 
-        # Evitar división por cero
-        counts = counts.clamp(min=1)
-
-        # Obtener promedio
-        prototypes = sums / counts.unsqueeze(1)
-        
-        return prototypes.detach()
-    
-    @torch.no_grad()
-    def update_prototypes_distributed(self, new_prototype, target_con1, epoch):
-        world_size = torch.distributed.get_world_size()
-
-        cls_list = torch.unique(target_con1).long()
-        proto_dim = new_prototype.size(1)
-
-        # Prepare containers
-        global_updates = torch.zeros_like(self.prototypes)  # (C, D)
-        counts = torch.zeros(self.n_classes, device=self.device)
-
-        for cls in cls_list:
-            global_updates[cls] = new_prototype[cls].detach()
-            counts[cls] = 1.0
-
-        # Sum across all GPUs
-        torch.distributed.all_reduce(global_updates, op=torch.distributed.ReduceOp.SUM)
-        torch.distributed.all_reduce(counts, op=torch.distributed.ReduceOp.SUM)
-
-        # Compute global averages for the classes that appeared on any GPU
-        valid = counts > 0
-        global_updates[valid] /= counts[valid].unsqueeze(1)
-
-        # Update prototypes with EMA
-        for cls in torch.where(valid)[0]:
-            cls = cls.item()
-            if not self.prototype_initialized[cls]:
-                self.prototypes[cls] = F.normalize(global_updates[cls], dim=0)
-                self.prototype_initialized[cls] = True
-            else:
-                updated = (
-                    self.momentum_ema[cls] * self.prototypes[cls]
-                    + (1 - self.momentum_ema[cls]) * global_updates[cls]
-                )
-                self.prototypes[cls] = F.normalize(updated, dim=0)
-
-        # Sync initialized flags across GPUs
-        proto_flags = self.prototype_initialized.float()
-        torch.distributed.all_reduce(proto_flags, op=torch.distributed.ReduceOp.MAX)
-        self.prototype_initialized = proto_flags.bool()
+        prototypes = torch.stack(prototypes, dim=0)  # (num_classes_in_batch, D)
+        return prototypes, classes_in_batch
 
     def extract_crop_features(self, features: torch.Tensor, gt_masks: torch.Tensor, ignore_index: int = 19):
         """
@@ -302,7 +244,7 @@ class Trainer:
         crop_labels = torch.tensor(crop_labels, device=features.device, dtype=torch.long)  # [N]
         return crop_features, crop_labels
     
-    def train_one_epoch(self, epoch: int, grads=None, grads_proj=None, grads_mhsa=None) -> None:
+    def train_one_epoch(self, epoch: int, grads=None, grads_proj=None) -> None:
         """Train model for one epoch.
 
         Args:
@@ -334,12 +276,9 @@ class Trainer:
                             feat_v1,
                             target.float()
                             )
-                        new_prototype = F.normalize(self.compute_class_prototypes(feat_con1, target_con1), p=2, dim=-1)
-                        self.update_prototypes_distributed(new_prototype, target_con1, epoch)
+                        batch_prototypes, labels_prototypes = self.compute_class_prototypes(feat_con1, target_con1)
 
                         image["v2"], target_transformed2 = self.temporal_transform(image["v1"].detach().clone(), target.clone())
-
-                    projected_prototypes = self.prototype_projector(self.prototypes.detach())
 
                     feat_v2 = self.model.module.forward_features(image["v2"],
                                                 batch_positions=data["metadata"])
@@ -348,9 +287,9 @@ class Trainer:
                         target_transformed2.float()
                         )
 
-                    proj2 = self.projector(feat_con2)
+                    projections = self.projector(torch.cat((batch_prototypes.detach(), feat_con2), dim=0))
 
-                    loss_contrastive = self.contrastive(projected_prototypes, proj2, target_con2)
+                    loss_contrastive = self.contrastive(projections, labels_prototypes, target_con2)
 
                     loss = loss_ce + self.alpha*loss_contrastive
 
@@ -369,7 +308,6 @@ class Trainer:
                 grads = gradfilter_ema(self.model, grads=grads)
                 if self.alpha > 0.0:
                     grads_proj = gradfilter_ema(self.projector, grads=grads_proj)
-                    grads_mhsa = gradfilter_ema(self.prototype_projector, grads=grads_mhsa)
             self.scaler.step(self.optimizer)
             self.scaler.update()
             self.training_stats['loss'].update(loss.item())
@@ -396,7 +334,7 @@ class Trainer:
 
             self.training_stats["batch_time"].update(time.time() - end_time)
             end_time = time.time()
-        return grads, grads_proj, grads_mhsa
+        return grads, grads_proj
 
     def get_checkpoint(self, epoch: int) -> dict[str, dict | int]:
         """Create a checkpoint dictionary, containing references to the pytorch tensors.
@@ -582,7 +520,6 @@ class SegTrainer(Trainer):
         self,
         model: nn.Module,
         projector: nn.Module,
-        prototype_projector: nn.Module,
         train_loader: DataLoader,
         criterion: nn.Module,
         bcl_config: str,
@@ -625,7 +562,6 @@ class SegTrainer(Trainer):
         super().__init__(
             model=model,
             projector=projector,
-            prototype_projector=prototype_projector,
             projection_dim=projection_dim,
             train_loader=train_loader,
             criterion=criterion,

@@ -172,123 +172,67 @@ class CropConLoss(torch.nn.Module):
         self.ignore_index = ignore_index
         self.bcl_config = bcl_config
         self.device = device
-
-    def forward(self, protos, proj2, target2, proj3=None, target3=None):
-
-        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1) if proj3 is not None else F.normalize(proj2, p=2, dim=-1)  # [M, D]
-        labels = torch.cat([target2, target3], dim=0).long() if proj3 is not None else target2.long()               # [M]
-        protos = F.normalize(protos, p=2, dim=-1)                           # [C, D]
         
-        if self.bcl_config == "original":
-            return self.forward_original(protos, feats, labels)
-        elif self.bcl_config == "class_balanced":
-            return self.forward_class_balanced(protos, feats, labels)
+    def forward(self, projections, labels_prototypes, labels):
 
-    def forward_original(self, protos, feats, labels):                       # [C, D]
+        protos = projections[:labels_prototypes.size(0)]
+        feats = projections[labels_prototypes.size(0):]
 
         # Filter out ignored labels
-        valid_mask = labels != self.ignore_index
-        feats = feats[valid_mask]
-        labels = labels[valid_mask]
+        valid_mask_feats = labels != self.ignore_index
+        feats = feats[valid_mask_feats]
+        labels = labels[valid_mask_feats]
+        valid_mask_protos = labels_prototypes != self.ignore_index
+        protos = protos[valid_mask_protos]
+        labels_prototypes = labels_prototypes[valid_mask_protos]
 
         M, D = feats.shape
         if M == 0:
             return torch.tensor(0.0, device=self.device, requires_grad=True)
 
-        C = protos.size(0)
-
         # === Similarity matrices ===
-        sim_matrix = torch.matmul(feats, feats.T) / self.temperature        # [M, M]
-        proto_sim = torch.matmul(feats, protos.T) / self.temperature        # [M, C]
+        sim_matrix = torch.matmul(feats, feats.T) / self.temperature          # [M, M]
+        proto_sim = torch.matmul(feats, protos.T) / self.temperature          # [M, C_b]
 
         # Remove self-similarity
         eye = torch.eye(M, device=self.device, dtype=torch.bool)
         sim_matrix = sim_matrix.masked_fill(eye, -float('inf'))
 
         # === Class match masks ===
-        match_matrix = labels.unsqueeze(1) == labels.unsqueeze(0)           # [M, M]
+        match_matrix = labels.unsqueeze(1) == labels.unsqueeze(0)             # [M, M]
+        match_proto = labels.unsqueeze(1) == labels_prototypes.unsqueeze(0)   # [M, C_b]
 
         # === Numerator ===
-        numer_region = torch.exp(sim_matrix) * match_matrix                 # [M, M]
-        numer_proto = torch.gather(torch.exp(proto_sim), 1, labels.view(-1,1))  # [M, 1]
-        numer = numer_region.sum(dim=1) + numer_proto.squeeze(1)            # [M]
+        numer_region = torch.exp(sim_matrix) * match_matrix                   # [M, M]
+        numer_proto = torch.exp(proto_sim) * match_proto                      # [M, C_b]
+        numer = numer_region.sum(dim=1) + numer_proto.sum(dim=1)             # [M]
 
         # === Denominator with class balancing ===
-        # Estimate class frequency from labels (both feats and protos)
-        labels_all = torch.cat([labels, torch.arange(C, device=self.device)])    # [M + C]
-        cls_freq = torch.bincount(labels_all, minlength=C).float()          # [C]
-        cls_freq = cls_freq + 1e-6  # avoid division by zero
+        # All class labels in this batch (from features and prototypes)
+        labels_all = torch.cat([labels, labels_prototypes])                  # [M + C_b]
+        max_class_label = labels_all.max().item() + 1
 
-        # Construct per-instance weights
-        feat_weights = cls_freq[labels]                                     # [M]
-        proto_weights = cls_freq.unsqueeze(0).expand(M, -1)                 # [M, C]
+        # Class frequencies
+        cls_freq = torch.bincount(labels_all, minlength=max_class_label).float().to(feats.device)
+        cls_freq = cls_freq + 1e-6
+
+        # Weights per feature and prototype
+        feat_weights = cls_freq[labels]                                       # [M]
+        proto_weights = cls_freq[labels_prototypes]                           # [C_b]
+        proto_weights = proto_weights.unsqueeze(0).expand(M, -1)              # [M, C_b]
 
         # Weight feat-feat similarities
-        weight_matrix = feat_weights.unsqueeze(1).expand(-1, M)             # [M, M]
-        weight_matrix = weight_matrix.masked_fill(eye, 1e6)                 # avoid self-similarities
+        weight_matrix = feat_weights.unsqueeze(1).expand(-1, M)               # [M, M]
+        weight_matrix = weight_matrix.masked_fill(eye, 1e6)
 
-        denom_region = torch.exp(sim_matrix) / weight_matrix                # [M, M]
-        denom_proto = torch.exp(proto_sim) / proto_weights                  # [M, C]
-        denom = denom_region.sum(dim=1) + denom_proto.sum(dim=1)            # [M]
+        denom_region = torch.exp(sim_matrix) / weight_matrix                  # [M, M]
+        denom_proto = torch.exp(proto_sim) / proto_weights                    # [M, C_b]
+        denom = denom_region.sum(dim=1) + denom_proto.sum(dim=1)             # [M]
 
         # === Final loss ===
-        loss = -torch.log(numer / (denom + 1e-12))                          # [M]
-
-        # === Prototypes Regularization ===
-        prot_var_reg = torch.sqrt(protos.var(dim=0) + 1e-12)
-        prot_var_reg = torch.mean(F.relu(1 - prot_var_reg))
-
-        prot_cov_reg = ((protos.T @ protos) / (C - 1)).square()
-        prot_cov_reg = (prot_cov_reg.sum() - prot_cov_reg.diagonal().sum()) / D
-
-        return loss.mean() + prot_var_reg + 0.1 * prot_cov_reg
-        
-    def forward_class_balanced(self, protos, feats, labels):
-
-        B2 = feats.size(0)
-        C = protos.size(0)
-
-        # Extend features and labels with prototypes
-        features_all = torch.cat([feats, protos], dim=0)                    # [2B + C, D]
-        targets_all = torch.cat([
-            labels,                    # [2B]
-            torch.arange(C, device=self.device)  # [C]
-        ], dim=0)                                                          # [2B + C]
-
-        # Compute label frequencies in the batch (for weighting)
-        batch_cls_count = torch.eye(C, device=self.device)[targets_all].sum(dim=0)  # [C]
-
-        # Compute positive mask
-        mask = torch.eq(labels.unsqueeze(1), targets_all.unsqueeze(0)).float()  # [2B, 2B+C]
-
-        # Mask out self-similarities from region-region comparison
-        logits_mask = torch.ones_like(mask)
-        logits_mask[:, :B2].fill_diagonal_(0.0)  # [2B, 2B]
-
-        # Compute cosine similarity logits
-        logits = torch.matmul(feats, features_all.T) / self.temperature    # [2B, 2B+C]
-
-        # Stability: subtract max
-        logits_max, _ = torch.max(logits, dim=1, keepdim=True)
-        logits = logits - logits_max.detach()
-
-        # Compute weights for class balancing
-        targets_expanded = targets_all.unsqueeze(0).expand(B2, -1)         # [2B, 2B+C]
-        per_ins_weight = batch_cls_count[targets_expanded] - mask         # [2B, 2B+C]
-
-        # Exponentiate logits and mask
-        exp_logits = torch.exp(logits) * logits_mask
-
-        # Compute class-balanced denominator
-        denom = (exp_logits / (per_ins_weight + 1e-12)).sum(dim=1, keepdim=True)  # [2B, 1]
-
-        # Compute log-probabilities
-        log_prob = logits - torch.log(denom + 1e-12)                        # [2B, 2B+C]
-        mean_log_prob_pos = (mask * log_prob).sum(dim=1) / (mask.sum(dim=1) + 1e-12)  # [2B]
-
-        # Final loss
-        loss = -mean_log_prob_pos
+        loss = -torch.log(numer / (denom + 1e-12))                            # [M]
         return loss.mean()
+
 
     def __str__(self):
         return 'CropConLoss'
