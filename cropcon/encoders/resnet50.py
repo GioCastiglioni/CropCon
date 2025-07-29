@@ -35,7 +35,7 @@ class ResNet50(Encoder):
 
         net = models.resnet50(weights=None)
         # Modify input conv to support custom input channels
-        net.conv1 = nn.Conv2d(13, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        net.conv1 = nn.Conv2d(self.in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
         self.initial = nn.Sequential(
             net.conv1,   # output: 64 x H/2 x W/2
@@ -77,7 +77,7 @@ class ResNet50(Encoder):
 
         # Crear modelo temporal y ajustar conv1 si es necesario
         dummy_model = models.resnet50(weights=None)
-        dummy_model.conv1 = nn.Conv2d(13, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        dummy_model.conv1 = nn.Conv2d(self.in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
         # Cargar los pesos sin forzar exactitud completa
         missing_keys, unexpected_keys = dummy_model.load_state_dict(new_state_dict, strict=False)

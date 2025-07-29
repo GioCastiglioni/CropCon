@@ -76,7 +76,7 @@ class ResNet18(Encoder):
 
         # Construct a temporary torch model to use `load_state_dict`
         dummy_model = models.resnet18(weights=None)
-        dummy_model.conv1 = nn.Conv2d(13, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        dummy_model.conv1 = nn.Conv2d(self.in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
         # Load weights
         missing_keys, unexpected_keys = dummy_model.load_state_dict(new_state_dict, strict=False)
