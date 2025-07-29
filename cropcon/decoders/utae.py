@@ -78,8 +78,8 @@ class UTAE(Decoder):
             d_k=4,
         )
         self.temporal_aggregator = Temporal_Aggregator(mode="att_group")
-        self.out_conv = ConvBlock(nkernels=[self.dec_topology[0]] + [self.dec_topology[0], self.num_classes], padding_mode="reflect")
-
+        #self.out_conv = ConvBlock(nkernels=[self.dec_topology[0]] + [self.dec_topology[0], self.num_classes], padding_mode="reflect")
+        self.out_conv = nn.Conv2d(self.dec_topology[0], self.num_classes, kernel_size=1)
 
     def forward(self, x, batch_positions=None, return_feats=True):
         feat_v = self.forward_features(x, batch_positions=batch_positions)

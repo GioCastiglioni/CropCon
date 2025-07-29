@@ -26,7 +26,6 @@ class Trainer:
         self,
         model: nn.Module,
         projector: nn.Module,
-        prototype_projector: nn.Module,
         train_loader: DataLoader,
         criterion: nn.Module,
         bcl_config: str,
@@ -125,8 +124,6 @@ class Trainer:
 
         self.projector = projector
         
-        self.prototype_projector = prototype_projector
-        
         self.transform = ConsistentTransform(h_w=self.model.module.encoder.input_size, degrees=45, p=0.5).to(self.device)
 
         self.n_classes = self.model.module.num_classes
@@ -158,7 +155,7 @@ class Trainer:
             # set sampler
             self.t = time.time()
             self.train_loader.sampler.set_epoch(epoch)
-            grads, grads_proj, grads_mhsa = self.train_one_epoch(epoch, grads=grads, grads_proj=grads_proj, grads_mhsa=grads_mhsa)
+            grads, grads_proj = self.train_one_epoch(epoch, grads=grads, grads_proj=grads_proj)
             if epoch % self.ckpt_interval == 0 and epoch != self.start_epoch: self.save_model(epoch)
             torch.cuda.empty_cache()
 
@@ -223,11 +220,9 @@ class Trainer:
         return prototypes.detach()
     
     @torch.no_grad()
-    def update_prototypes_distributed(self, new_prototype, target_con1, epoch):
-        world_size = torch.distributed.get_world_size()
+    def update_prototypes_distributed(self, new_prototype, target_con1):
 
         cls_list = torch.unique(target_con1).long()
-        proto_dim = new_prototype.size(1)
 
         # Prepare containers
         global_updates = torch.zeros_like(self.prototypes)  # (C, D)
@@ -263,46 +258,47 @@ class Trainer:
         torch.distributed.all_reduce(proto_flags, op=torch.distributed.ReduceOp.MAX)
         self.prototype_initialized = proto_flags.bool()
 
-    def extract_crop_features(self, features: torch.Tensor, gt_masks: torch.Tensor, ignore_index: int = 19):
-        """
-        features: [B, D, H, W]
-        gt_masks: [B, H, W] with values in [0, C-1] or ignore_index
-        Returns:
-            crop_features: [N, D] where N is the total number of crops across the batch
-            crop_labels: [N] with the class label of each crop
-        """
+    @torch.no_grad()
+    def extract_crop_features(self, features: torch.Tensor, gt_masks: torch.Tensor):
         B, D, H, W = features.shape
+        device = features.device
         crop_vecs = []
         crop_labels = []
 
         for b in range(B):
-            gt_mask = gt_masks[b].cpu().numpy()
             feat = features[b]  # [D, H, W]
+            gt_mask_np = gt_masks[b].cpu().numpy()
 
-            for class_id in np.unique(gt_mask):
-                if class_id == ignore_index:
+            for class_id in np.unique(gt_mask_np):
+                if class_id == self.criterion.ignore_index:
                     continue
-                class_mask = (gt_mask == class_id).astype(np.uint8)
+
+                class_mask = (gt_mask_np == class_id).astype(np.uint8)
                 labeled, num_features = lbl(class_mask)
 
                 for i in range(1, num_features + 1):
-                    crop_mask_np = (labeled == i)  # [H, W]
-                    if crop_mask_np.sum() < 1:
+                    crop_mask = (labeled == i)
+                    if crop_mask.sum() == 0:
                         continue
-                    crop_mask = torch.from_numpy(crop_mask_np).to(features.device)  # [H, W]
-                    crop_feats = feat[:, crop_mask]  # [D, N]
-                    crop_avg = crop_feats.mean(dim=1)  # [D]
+
+                    # Flatten and get indices (faster than indexing with bool mask)
+                    yx_idx = np.nonzero(crop_mask)
+                    y_idx, x_idx = yx_idx
+
+                    # Efficiently index features at selected positions
+                    crop_feat = feat[:, y_idx, x_idx]  # [D, N]
+                    crop_avg = crop_feat.mean(dim=1)  # [D]
                     crop_vecs.append(crop_avg)
                     crop_labels.append(int(class_id))
 
-        if len(crop_vecs) == 0:
-            return torch.empty(0, D).to(features.device), torch.empty(0, dtype=torch.long).to(features.device)
+        if not crop_vecs:
+            return torch.empty(0, D, device=device), torch.empty(0, dtype=torch.long, device=device)
 
-        crop_features = torch.stack(crop_vecs, dim=0)  # [N, D]
-        crop_labels = torch.tensor(crop_labels, device=features.device, dtype=torch.long)  # [N]
+        crop_features = torch.stack(crop_vecs, dim=0)
+        crop_labels = torch.tensor(crop_labels, dtype=torch.long, device=device)
         return crop_features, crop_labels
     
-    def train_one_epoch(self, epoch: int, grads=None, grads_proj=None, grads_mhsa=None) -> None:
+    def train_one_epoch(self, epoch: int, grads=None, grads_proj=None) -> None:
         """Train model for one epoch.
 
         Args:
@@ -335,11 +331,11 @@ class Trainer:
                             target.float()
                             )
                         new_prototype = F.normalize(self.compute_class_prototypes(feat_con1, target_con1), p=2, dim=-1)
-                        self.update_prototypes_distributed(new_prototype, target_con1, epoch)
+                        self.update_prototypes_distributed(new_prototype, target_con1)
 
-                        image["v2"], target_transformed2 = self.temporal_transform(image["v1"].detach().clone(), target.clone())
+                        image["v2"], target_transformed2 = self.temporal_transform(image["v1"], target)
 
-                    projected_prototypes = self.prototype_projector(self.prototypes.detach())
+                    projected_prototypes = self.projector(self.prototypes.detach())
 
                     feat_v2 = self.model.module.forward_features(image["v2"],
                                                 batch_positions=data["metadata"])
@@ -369,7 +365,6 @@ class Trainer:
                 grads = gradfilter_ema(self.model, grads=grads)
                 if self.alpha > 0.0:
                     grads_proj = gradfilter_ema(self.projector, grads=grads_proj)
-                    grads_mhsa = gradfilter_ema(self.prototype_projector, grads=grads_mhsa)
             self.scaler.step(self.optimizer)
             self.scaler.update()
             self.training_stats['loss'].update(loss.item())
@@ -396,7 +391,7 @@ class Trainer:
 
             self.training_stats["batch_time"].update(time.time() - end_time)
             end_time = time.time()
-        return grads, grads_proj, grads_mhsa
+        return grads, grads_proj
 
     def get_checkpoint(self, epoch: int) -> dict[str, dict | int]:
         """Create a checkpoint dictionary, containing references to the pytorch tensors.
@@ -582,7 +577,6 @@ class SegTrainer(Trainer):
         self,
         model: nn.Module,
         projector: nn.Module,
-        prototype_projector: nn.Module,
         train_loader: DataLoader,
         criterion: nn.Module,
         bcl_config: str,
@@ -625,7 +619,6 @@ class SegTrainer(Trainer):
         super().__init__(
             model=model,
             projector=projector,
-            prototype_projector=prototype_projector,
             projection_dim=projection_dim,
             train_loader=train_loader,
             criterion=criterion,

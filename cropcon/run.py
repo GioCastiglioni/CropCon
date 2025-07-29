@@ -207,20 +207,8 @@ def main(cfg: DictConfig) -> None:
                 output_device=local_rank,
                 find_unused_parameters=False,
             )
-            
-        prototype_projector = torch.nn.parallel.DistributedDataParallel(
-            ProjectionHead(
-                embed_dim=decoder.module.dec_topology[0],
-                mlp_hidden_dim=512,
-                projection_dim=cfg.projection_dim,
-                attention=True).to(device),
-                device_ids=[local_rank],
-                output_device=local_rank,
-                find_unused_parameters=False,
-            )
     else: 
         projector = None
-        prototype_projector = None
 
     logger.info(
             "Built {} for with {} encoder.".format(
@@ -342,7 +330,6 @@ def main(cfg: DictConfig) -> None:
         if cfg.finetune:
             params.append({'params': decoder.module.encoder.parameters(), 'lr': cfg.optimizer.lr * cfg.ft_rate})
         if cfg.task.trainer.alpha != 0:
-            params.append({'params': prototype_projector.parameters()})
             params.append({'params': projector.parameters()})
 
         optimizer = instantiate(cfg.optimizer, params=None)
@@ -366,7 +353,6 @@ def main(cfg: DictConfig) -> None:
                 cfg.task.trainer,
                 model=decoder,
                 projector=projector,
-                prototype_projector=prototype_projector,
                 projection_dim=cfg.projection_dim,
                 train_loader=train_loader,
                 lr_scheduler=lr_scheduler,
