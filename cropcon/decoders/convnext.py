@@ -135,7 +135,7 @@ class ConvNextDecoder(nn.Module):
             nn.Conv2d(decoder_channels[0] + encoder_channels[-1], decoder_channels[0], kernel_size=3, padding=1),
             nn.GELU(),
             nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
-            nn.Conv2d(decoder_channels[0] + encoder_channels[-1], decoder_channels[0], kernel_size=3, padding=1),
+            nn.Conv2d(decoder_channels[0], decoder_channels[0], kernel_size=3, padding=1),
             nn.GELU())
 
     def forward(self, features: List[torch.Tensor], stem: torch.Tensor) -> torch.Tensor:
