@@ -114,35 +114,42 @@ class ConvNextDecoder(nn.Module):
 
         self.blocks = nn.ModuleList()
 
-        for i in range(len(decoder_channels)-1):
-            in_channels = encoder_channels[i]  # from previous decoder output
-            skip_channels = encoder_channels[i + 1] if i + 1 < len(encoder_channels) else 0
-            out_channels = decoder_channels[i]
+        self.blocks.append(
+            ConvNextStyleDecoderBlock(
+                in_channels=encoder_channels[0],
+                out_channels=decoder_channels[-1]
+            ))
+
+        for i in range(1, len(decoder_channels)):
+            in_channels = decoder_channels[-i]  # from previous decoder output
+            skip_channels = encoder_channels[i]
+            out_channels = decoder_channels[-(i+1)]
             self.blocks.append(
                 ConvNextStyleDecoderBlock(
                     in_channels=in_channels + skip_channels,
                     out_channels=out_channels
                 ))
         
-        self.blocks.append(
-                ConvNextStyleDecoderBlock(
-                    in_channels=decoder_channels[0] + encoder_channels[-1],
-                    out_channels=decoder_channels[-1]
-                ))
-        
         self.final_upsample = nn.Sequential(
-            nn.Upsample(scale_factor=4, mode="bilinear", align_corners=True),
-            nn.Conv2d(decoder_channels[-1], decoder_channels[0], kernel_size=3, padding=1),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
+            nn.Conv2d(decoder_channels[0] + encoder_channels[-1], decoder_channels[0], kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
+            nn.Conv2d(decoder_channels[0] + encoder_channels[-1], decoder_channels[0], kernel_size=3, padding=1),
             nn.GELU())
 
     def forward(self, features: List[torch.Tensor], stem: torch.Tensor) -> torch.Tensor:
         x = features[0]
-        skips = features[1:] + [stem]  # include stem as last skip
+        skips = features[1:]
+        x = self.blocks[0](x)
 
-        for i, block in enumerate(self.blocks):
+        for i, block in enumerate(self.blocks[1:]):
             x = F.interpolate(x, size=skips[i].shape[-2:], mode="bilinear", align_corners=False)
             x = torch.cat([x, skips[i]], dim=1)
             x = block(x)
+
+        x = F.interpolate(x, size=stem.shape[-2:], mode="bilinear", align_corners=False)
+        x = torch.cat([x, stem], dim=1)
         x = self.final_upsample(x)
 
         return x

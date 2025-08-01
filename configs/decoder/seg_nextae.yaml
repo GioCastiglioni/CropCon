@@ -4,4 +4,4 @@ encoder: null
 num_classes: ${dataset.num_classes}
 multi_temporal: ${dataset.multi_temporal}
 finetune: ${finetune}
-dec_topology: [128, 128, 128, 256]
+dec_topology: [96, 192, 384, 768]
