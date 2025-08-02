@@ -41,7 +41,8 @@ class ConvNext(Decoder):
 
         self.up_blocks = ConvNextDecoder(
             encoder_channels=self.in_channels[::-1],
-            decoder_channels=self.dec_topology)
+            decoder_channels=self.dec_topology,
+            decoder_depths=self.encoder.depths[::-1])
         
         self.tmap = LTAE2d(
             in_channels=self.topology[-1],
@@ -107,29 +108,27 @@ class ConvNext(Decoder):
 
 
 class ConvNextDecoder(nn.Module):
-    def __init__(self, encoder_channels: List[int], decoder_channels: List[int]):
+    def __init__(self, encoder_channels: List[int], decoder_channels: List[int], decoder_depths: List[int]):
         super().__init__()
-        assert len(encoder_channels) == len(decoder_channels), \
-            "encoder_channels and decoder_channels must have the same length"
+        assert len(encoder_channels) == len(decoder_channels) == len(decoder_depths)
 
         self.blocks = nn.ModuleList()
 
-        self.blocks.append(
-            ConvNextStyleDecoderBlock(
-                in_channels=encoder_channels[0],
-                out_channels=decoder_channels[-1]
-            ))
+        for i in range(len(decoder_channels)):
+            in_channels = encoder_channels[i] if i == 0 else decoder_channels[-i]
+            skip_channels = 0 if i == 0 else encoder_channels[i]
+            out_channels = decoder_channels[-(i + 1)]
+            depth = decoder_depths[i]
 
-        for i in range(1, len(decoder_channels)):
-            in_channels = decoder_channels[-i]  # from previous decoder output
-            skip_channels = encoder_channels[i]
-            out_channels = decoder_channels[-(i+1)]
             self.blocks.append(
                 ConvNextStyleDecoderBlock(
                     in_channels=in_channels + skip_channels,
-                    out_channels=out_channels
-                ))
-        
+                    out_channels=out_channels,
+                    depth=depth
+                )
+            )
+
+        # Final upsample remains unchanged
         self.final_upsample = nn.Sequential(
             nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
             nn.Conv2d(decoder_channels[0] + encoder_channels[-1], decoder_channels[0], kernel_size=3, padding=1),
@@ -166,20 +165,23 @@ class LayerScaler(nn.Module):
 
 
 class ConvNextStyleDecoderBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int):
+    def __init__(self, in_channels: int, out_channels: int, depth: int = 1):
         super().__init__()
-        self.conv = nn.Sequential(
+        layers = [
             nn.Conv2d(in_channels, out_channels, kernel_size=1),
             nn.BatchNorm2d(out_channels),
             nn.GELU(),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.GELU()
-        )
+        ]
+        for _ in range(depth):
+            layers += [
+                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+                nn.BatchNorm2d(out_channels),
+                nn.GELU(),
+            ]
+        self.conv = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.conv(x)
-
 
 
 class Temporal_Aggregator(nn.Module):
