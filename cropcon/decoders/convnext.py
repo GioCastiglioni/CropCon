@@ -165,23 +165,32 @@ class LayerScaler(nn.Module):
 
 
 class ConvNextStyleDecoderBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, depth: int = 1):
+    def __init__(self, in_channels: int, out_channels: int, depth: int = 1,
+                 expansion: int = 4, layer_scaler_init_value: float = 1e-6):
         super().__init__()
-        layers = [
-            nn.Conv2d(in_channels, out_channels, kernel_size=1),
-            nn.BatchNorm2d(out_channels),
-            nn.GELU(),
-        ]
-        for _ in range(depth):
-            layers += [
-                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-                nn.BatchNorm2d(out_channels),
+
+        expanded_features = out_channels * expansion
+
+        self.proj_in = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+
+        self.blocks = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(out_channels, out_channels, kernel_size=7, padding=3, groups=out_channels, bias=False),
+                nn.GroupNorm(1, out_channels),
+                nn.Conv2d(out_channels, expanded_features, kernel_size=1),
                 nn.GELU(),
-            ]
-        self.conv = nn.Sequential(*layers)
+                nn.Conv2d(expanded_features, out_channels, kernel_size=1),
+                LayerScaler(layer_scaler_init_value, out_channels),
+            ) for _ in range(depth)
+        ])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.conv(x)
+        x = self.proj_in(x)
+        for block in self.blocks:
+            res = x
+            x = block(x)
+            x = x + res
+        return x
 
 
 class Temporal_Aggregator(nn.Module):
