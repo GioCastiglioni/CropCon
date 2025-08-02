@@ -215,6 +215,8 @@ def main(cfg: DictConfig) -> None:
                 decoder.module.model_name, type(encoder).__name__
             )
         )
+    
+    logger.info(f"Total parameters: {sum(p.numel() for p in decoder.module.parameters())}")
 
     def non_encoder_params(module):
         for name, param in module.named_parameters():
