@@ -211,7 +211,7 @@ def main(cfg: DictConfig) -> None:
         projector = None
 
     logger.info(
-            "Built {} for with {} encoder.".format(
+            "Built {} for {} encoder.".format(
                 decoder.module.model_name, type(encoder).__name__
             )
         )

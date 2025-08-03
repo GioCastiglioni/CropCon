@@ -132,10 +132,12 @@ class ConvNextDecoder(nn.Module):
         self.final_upsample = nn.Sequential(
             nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
             nn.Conv2d(decoder_channels[0] + encoder_channels[-1], decoder_channels[0], kernel_size=3, padding=1),
-            nn.GELU(),
+            nn.BatchNorm2d(decoder_channels[0]),
+            nn.ReLU(inplace=True),
             nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
             nn.Conv2d(decoder_channels[0], decoder_channels[0], kernel_size=3, padding=1),
-            nn.GELU())
+            nn.BatchNorm2d(decoder_channels[0]),
+            nn.ReLU(inplace=True))
 
     def forward(self, features: List[torch.Tensor], stem: torch.Tensor) -> torch.Tensor:
         x = features[0]
