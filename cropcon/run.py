@@ -398,7 +398,7 @@ def main(cfg: DictConfig) -> None:
             dataset_name=cfg.dataset.dataset_name
         )
 
-        model_ckpt_path = get_best_model_ckpt_path(exp_dir)
+        model_ckpt_path = get_best_model_ckpt_path(exp_dir) if not cfg.use_final_ckpt else get_final_model_ckpt_path(exp_dir)
         metrics, _ = test_evaluator.evaluate(decoder, "test_model", model_ckpt_path)
 
         logger.info(
