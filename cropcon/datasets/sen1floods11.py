@@ -34,6 +34,8 @@ class Sen1Floods11(RawGeoFMDataset):
         data_max: dict[str, list[str]],
         download_url: str,
         auto_download: bool,
+        support_test: bool,
+        fold_config: int,
         gcs_bucket: str,
     ):
         """Initialize the Sen1Floods11 dataset.
@@ -86,6 +88,8 @@ class Sen1Floods11(RawGeoFMDataset):
             data_std=data_std,
             data_min=data_min,
             data_max=data_max,
+            support_test=support_test,
+            fold_config=fold_config,
             download_url=download_url,
             auto_download=auto_download,
         )

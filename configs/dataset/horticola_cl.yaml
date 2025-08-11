@@ -1,0 +1,188 @@
+_target_: cropcon.datasets.cropschile.CropsChile
+dataset_name: Horticola_Chile
+root_path: /data/nisla/ChileCrops
+download_url: null
+auto_download: False
+
+img_size: 128
+multi_temporal: 25
+multi_modal: True
+obj: horticola
+
+fold_config: null
+support_test: True
+
+# classes
+ignore_index: 0
+num_classes: 31
+classes:
+  - Background
+  - ACELGA
+  - BETARRAGA
+  - BROCOLI
+  - CEBOLLA
+  - CEBOLLA TEMPRANA
+  - CEBOLLIN
+  - CHOCLO
+  - CILANTRO
+  - COLIFLOR
+  - ESPINACA
+  - FRUTILLA
+  - LECHUGA
+  - MELON
+  - PAPA
+  - PIMIENTO
+  - POROTO GRANADO
+  - POROTO VERDE
+  - RADICCIO
+  - SANDIA
+  - TOMATE CONSUMO FRESCO
+  - TOMATE INDUSTRIAL
+  - ZAPALLO GUARDA
+  - ZAPALLO ITALIANO
+  - AJI
+  - AJO
+  - CEBOLLA DE GUARDA
+  - CEBOLLA INTERMEDIA O PASCUALINA
+  - PEPINO DE ENSALADA
+  - REPOLLO
+  - ZAPALLO TEMPRANO
+
+distribution:
+  - 0.9417
+  - 0.0002
+  - 0.0005
+  - 0.0008
+  - 0.0015
+  - 0.0004
+  - 0.0005
+  - 0.0067
+  - 0.0003
+  - 0.0006
+  - 0.0003
+  - 0.0012
+  - 0.0009
+  - 0.0035
+  - 0.0044
+  - 0.0005
+  - 0.002
+  - 0.0007
+  - 0.00001
+  - 0.002
+  - 0.0039
+  - 0.0112
+  - 0.0072
+  - 0.0008
+  - 0.0002
+  - 0.0027
+  - 0.004
+  - 0.0004
+  - 0.0001
+  - 0.0007
+  - 0.0001
+
+bands:
+  optical:
+    - B1
+    - B2
+    - B3
+    - B4
+    - B5
+    - B6
+    - B7
+    - B8
+    - B8A
+    - B11
+    - B12
+    - B13
+
+  elevation:
+    - elevation
+  mTPI:
+    - mTPI
+  landforms:
+    - landforms
+
+data_mean:
+  optical:
+    - 4167.4197
+    - 4057.2493
+    - 4124.6608
+    - 4155.8101
+    - 4488.8895
+    - 4940.0963
+    - 5112.4936
+    - 5304.6655
+    - 5944.9768
+    - 3639.6654
+    - 3170.4272
+    - 5226.6731
+  elevation:
+    - 0.0114
+  mTPI:
+    - 0.0
+  landforms:
+    - 0.1153
+
+data_std:
+  optical:
+    - 3648.0727
+    - 3357.5859
+    - 3141.7927
+    - 3044.3294
+    - 3021.0017
+    - 2664.8849
+    - 2534.4102
+    - 2626.9341
+    - 3786.6301
+    - 1172.2209
+    - 1099.8543
+    - 2388.3117
+  elevation:
+    - 0.0016
+  mTPI:
+    - 0.0
+  landforms:
+    - 0.0254
+
+data_min:
+  optical:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+  elevation:
+    - 0.0039368877
+  mTPI:
+    - -2.19e-08
+  landforms:
+    - 0.0470588244
+
+data_max:
+  optical:
+    - 22484.0
+    - 20832.0
+    - 19920.0
+    - 19248.0
+    - 18027.0
+    - 17871.0
+    - 17708.0
+    - 17808.0
+    - 17727.0
+    - 16218.0
+    - 16128.0
+    - 17440.0
+  elevation:
+    - 0.0167546626
+  mTPI:
+    - 2.14e-08
+  landforms:
+    - 0.1647058874
