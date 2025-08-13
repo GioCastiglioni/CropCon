@@ -9,70 +9,6 @@ from cropcon.encoders.base import Encoder
 from torch.nn import functional as F
 from timm.layers import DropPath
 
-class LayerNorm(nn.Module):
-    """ LayerNorm that supports two data formats: channels_last (default) or channels_first. 
-    The ordering of the dimensions in the inputs. channels_last corresponds to inputs with 
-    shape (batch_size, height, width, channels) while channels_first corresponds to inputs 
-    with shape (batch_size, channels, height, width).
-    """
-    def __init__(self, normalized_shape, eps=1e-6, data_format="channels_last"):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(normalized_shape))
-        self.bias = nn.Parameter(torch.zeros(normalized_shape))
-        self.eps = eps
-        self.data_format = data_format
-        if self.data_format not in ["channels_last", "channels_first"]:
-            raise NotImplementedError 
-        self.normalized_shape = (normalized_shape, )
-    
-    def forward(self, x):
-        if self.data_format == "channels_last":
-            return F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
-        elif self.data_format == "channels_first":
-            u = x.mean(1, keepdim=True)
-            s = (x - u).pow(2).mean(1, keepdim=True)
-            x = (x - u) / torch.sqrt(s + self.eps)
-            x = self.weight[:, None, None] * x + self.bias[:, None, None]
-            return x
-
-class GRN(nn.Module):
-    """Global Response Normalization for NCHW layout (fast)."""
-    def __init__(self, num_channels, eps=1e-6):
-        super().__init__()
-        self.gamma = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
-        self.beta  = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
-        self.eps = eps
-
-    def forward(self, x):
-        # L2 norm over spatial dims via sum of squares (much faster than torch.linalg.norm)
-        Gx2 = x.mul(x).sum(dim=(2, 3), keepdim=True)             # (N, C, 1, 1)
-        Gx  = torch.sqrt(Gx2 + self.eps)                         # (N, C, 1, 1)
-        Nx  = Gx / (Gx.mean(dim=1, keepdim=True) + self.eps)     # (N, C, 1, 1)
-        return x + self.gamma * (x * Nx) + self.beta
-
-class Block(nn.Module):
-    def __init__(self, dim, drop_path=0.):
-        super().__init__()
-        self.dwconv  = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim)
-        self.norm    = LayerNorm(dim, eps=1e-6, data_format="channels_first")
-        self.pwconv1 = nn.Conv2d(dim, 4 * dim, kernel_size=1)
-        self.act     = nn.GELU()
-        self.grn     = GRN(4 * dim)
-        self.pwconv2 = nn.Conv2d(4 * dim, dim, kernel_size=1)
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-
-    def forward(self, x):
-        shortcut = x
-        x = self.dwconv(x)
-        x = x.contiguous()                     # (defensive; cheap)
-        x = self.norm(x)                       # channels_first LN
-        x = self.pwconv1(x)
-        x = self.act(x)
-        x = self.grn(x)                        # fast GRN above
-        x = self.pwconv2(x)
-        x = shortcut + self.drop_path(x)
-        return x
-
 
 class ConvNext(Encoder):
     """
@@ -97,7 +33,7 @@ class ConvNext(Encoder):
         encoder_weights: str | None = None,
     ):
         super().__init__(
-            model_name="ConvNext",
+            model_name="ConvNeXtV2",
             encoder_weights=encoder_weights,  # no pre-trained weights, train from scratch
             input_bands=input_bands,
             input_size=input_size,
@@ -153,3 +89,74 @@ class ConvNext(Encoder):
 
     def load_encoder_weights(self, logger: Logger, from_scratch: bool = True) -> None:
         pass
+
+
+class LayerNorm(nn.Module):
+    """ LayerNorm that supports two data formats: channels_last (default) or channels_first. 
+    The ordering of the dimensions in the inputs. channels_last corresponds to inputs with 
+    shape (batch_size, height, width, channels) while channels_first corresponds to inputs 
+    with shape (batch_size, channels, height, width).
+    """
+    def __init__(self, normalized_shape, eps=1e-6, data_format="channels_last"):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(normalized_shape))
+        self.bias = nn.Parameter(torch.zeros(normalized_shape))
+        self.eps = eps
+        self.data_format = data_format
+        if self.data_format not in ["channels_last", "channels_first"]:
+            raise NotImplementedError 
+        self.normalized_shape = (normalized_shape, )
+    
+    def forward(self, x):
+        if self.data_format == "channels_last":
+            return F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
+        elif self.data_format == "channels_first":
+            u = x.mean(1, keepdim=True)
+            s = (x - u).pow(2).mean(1, keepdim=True)
+            x = (x - u) / torch.sqrt(s + self.eps)
+            x = self.weight[:, None, None] * x + self.bias[:, None, None]
+            return x
+
+class GRN(nn.Module):
+    """ GRN (Global Response Normalization) layer
+    """
+    def __init__(self, dim):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.zeros(1, dim, 1, 1))
+        self.beta = nn.Parameter(torch.zeros(1, dim, 1, 1))
+
+    def forward(self, x):
+        Gx = torch.norm(x, p=2, dim=(2,3), keepdim=True)
+        Nx = Gx / (Gx.mean(dim=1, keepdim=True) + 1e-6)
+        return self.gamma * (x * Nx) + self.beta + x
+
+class Block(nn.Module):
+    """ ConvNeXtV2 Block.
+    
+    Args:
+        dim (int): Number of input channels.
+        drop_path (float): Stochastic depth rate. Default: 0.0
+    """
+    def __init__(self, dim, drop_path=0.):
+        super().__init__()
+        self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim) # depthwise conv
+        self.norm = LayerNorm(dim, eps=1e-6, data_format="channels_first")
+        self.pwconv1 = nn.Conv2d(dim, 4 * dim, kernel_size=1) # pointwise/1x1 convs
+        self.act = nn.GELU()
+        self.grn = GRN(4 * dim)
+        self.pwconv2 = nn.Conv2d(4 * dim, dim, kernel_size=1)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+    def forward(self, x):
+        input = x
+        x = self.dwconv(x)
+        x = self.norm(x)
+        x = self.pwconv1(x)
+        x = self.act(x)
+        x = self.grn(x)
+        x = self.pwconv2(x)
+
+        x = input + self.drop_path(x)
+        return x
+
+
