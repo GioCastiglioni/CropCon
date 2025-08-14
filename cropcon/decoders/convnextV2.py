@@ -1,3 +1,5 @@
+# Adapted from https://github.com/HMS97/ConvNeXtV2-Unet
+
 import torch.nn.functional as F
 import torch
 from torch import nn, Tensor

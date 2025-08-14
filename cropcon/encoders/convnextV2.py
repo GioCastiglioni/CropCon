@@ -1,3 +1,5 @@
+# Adapted from https://github.com/HMS97/ConvNeXtV2-Unet
+
 from typing import Sequence
 from logging import Logger
 
