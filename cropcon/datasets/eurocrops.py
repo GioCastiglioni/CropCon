@@ -169,10 +169,10 @@ class EuroCrops(RawGeoFMDataset):
         else:
             # select evenly spaced samples
             optical_whole_range_indexes = torch.linspace(
-                0, optical_ts.shape[1] - 1, min(35, optical_ts.shape[1]), dtype=torch.long
+                0, optical_ts.shape[1] - 1, self.multi_temporal, dtype=torch.long
             )
             optical_indexes = temporal_subsampling(
-                self.multi_temporal, optical_whole_range_indexes
+                self.multi_temporal, optical_whole_range_indexes, [self.multi_temporal]
                 )
 
             optical_ts = optical_ts[:, optical_indexes]
