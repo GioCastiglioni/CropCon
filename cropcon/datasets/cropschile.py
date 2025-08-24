@@ -236,10 +236,10 @@ class CropsChile(RawGeoFMDataset):
                 if array.shape[0] < 1:
                     raise ValueError(f"{modality} has zero time steps for patch {name}")
                 optical_whole_range_indexes = torch.linspace(
-                    0, array.shape[0] - 1, 25, dtype=torch.long
+                    0, array.shape[0] - 1, self.multi_temporal, dtype=torch.long
                 )
                 idx = temporal_subsampling(
-                    self.multi_temporal, optical_whole_range_indexes, [25]
+                    self.multi_temporal, optical_whole_range_indexes, [self.multi_temporal]
                 )
                 tensor = torch.from_numpy(array).to(torch.float32)[idx]
                 tensor = rearrange(tensor, "t c h w -> c t h w")
@@ -254,10 +254,10 @@ class CropsChile(RawGeoFMDataset):
                 if dates.numel() > 0:
 
                     optical_whole_range_indexes = torch.linspace(
-                        0, dates.shape[0] - 1, 25, dtype=torch.long
+                        0, dates.shape[0] - 1, self.multi_temporal, dtype=torch.long
                     )
                     idx = temporal_subsampling(
-                        self.multi_temporal, optical_whole_range_indexes, [25]
+                        self.multi_temporal, optical_whole_range_indexes, [self.multi_temporal]
                         )
                     metadata[modality] = dates[idx]
                 else:
