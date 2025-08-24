@@ -321,7 +321,9 @@ class Trainer:
                 logits  = self.model(image["v1"],
                                               batch_positions=data["metadata"],
                                               return_feats=False)
-                loss_ce = self.compute_loss(logits, target)
+                valid_pixels = (target != self.criterion.ignore_index)
+                if valid_pixels.any(): loss_ce = self.compute_loss(logits, target)
+                else: loss_ce = logits.sum() * 0.0
                 if self.alpha > 0.0:
                     with torch.no_grad():
                         feat_v1 = self.model.module.forward_features(image["v1"],
