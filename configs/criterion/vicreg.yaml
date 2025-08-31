@@ -1,4 +1,4 @@
-_target_: cropcon.utils.losses.SSL_Loss 
+_target_: cropcon.utils.losses.VICReg 
 ignore_index: null
 vic_weights: [25.0, 25.0, 1.0]
 inv_loss: "mse"

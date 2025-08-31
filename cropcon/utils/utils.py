@@ -155,18 +155,31 @@ class ConsistentTransform(torch.nn.Module):
             ])
 
     def forward(self, sample):
-        sample = {"image": tv_tensors.Image(sample["image"]), "mask": tv_tensors.Mask(sample["mask"])}
-        sample = self.transforms(sample)
-        img, mask = torch.as_tensor(sample["image"]), torch.as_tensor(sample["mask"])
+        if "mask" in sample:
+            sample = {"image": tv_tensors.Image(sample["image"]), "mask": tv_tensors.Mask(sample["mask"])}
+            sample = self.transforms(sample)
+            img, mask = torch.as_tensor(sample["image"]), torch.as_tensor(sample["mask"])
 
-        # Apply same rotation to both, with different interpolation modes
-        angle = torch.empty(1).uniform_(-self.degrees, self.degrees).item()
-        img = self.rotate_with_reflection_padding(img, angle, is_mask=False)
-        mask = self.rotate_with_reflection_padding(mask, angle, is_mask=True)
+            # Apply same rotation to both, with different interpolation modes
+            angle = torch.empty(1).uniform_(-self.degrees, self.degrees).item()
+            img = self.rotate_with_reflection_padding(img, angle, is_mask=False)
+            mask = self.rotate_with_reflection_padding(mask, angle, is_mask=True)
 
-        img = self.add_gaussian_noise(img)
+            img = self.add_gaussian_noise(img)
 
-        return {"image": img, "mask": mask}
+            return {"image": img, "mask": mask}
+        else:
+            sample = {"image": tv_tensors.Image(sample["image"])}
+            sample = self.transforms(sample)
+            img = torch.as_tensor(sample["image"])
+
+            # Apply same rotation to both, with different interpolation modes
+            angle = torch.empty(1).uniform_(-self.degrees, self.degrees).item()
+            img = self.rotate_with_reflection_padding(img, angle, is_mask=False)
+
+            img = self.add_gaussian_noise(img)
+
+            return {"image": img}
 
     def rotate_with_reflection_padding(self, img, angle, is_mask=False):
         """

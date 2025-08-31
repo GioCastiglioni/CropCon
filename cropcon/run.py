@@ -202,7 +202,7 @@ def main(cfg: DictConfig) -> None:
     if cfg.task.trainer.alpha != 0.0 or cfg.pretrain:
         projector = torch.nn.parallel.DistributedDataParallel(
             ProjectionHead(
-                embed_dim=decoder.module.dec_topology[0],
+                embed_dim=decoder.module.dec_topology[0] if not cfg.pretrain else decoder.module.dec_topology[-1],
                 mlp_hidden_dim=512,
                 projection_dim=cfg.projection_dim,
                 attention=False).to(device),

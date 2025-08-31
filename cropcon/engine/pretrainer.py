@@ -164,12 +164,11 @@ class Trainer:
         end_time = time.time()
         for batch_idx, data in enumerate(self.train_loader):
 
-            image, target = data["image"], data["target"]
+            image = data["image"]
             image = {"v1": image["optical"].to(self.device)}
-            target = target.to(self.device)
 
-            #with torch.no_grad():
-            #    image["v1"], target = self.temporal_transform(image["v1"], target)
+            with torch.no_grad():
+                image["v2"] = self.temporal_transform(image["v1"])
 
             self.training_stats["data_time"].update(time.time() - end_time)
 
@@ -177,16 +176,17 @@ class Trainer:
                 "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
             ):
                 
-                feat_v = self.model.module.forward_features(image["v1"],
+                feat_con1, _, _, _ = self.model.module.forward_bottleneck(image["v1"],
                                             batch_positions=data["metadata"])
-                feat_con, target_con = self.extract_crop_features(
-                    feat_v,
-                    target.float()
-                    )
 
-                proj = self.projector(feat_con)
+                feat_con2, _, _, _ = self.model.module.forward_bottleneck(image["v2"],
+                                            batch_positions=data["metadata"])
 
-                loss = self.compute_loss(proj, target_con)
+                proj = torch.amax(torch.cat([feat_con1, feat_con2], dim=0), dim=(-2,-1))
+
+                proj = self.projector(proj)
+
+                loss = self.compute_loss(proj[:proj.shape[0] // 2], proj[proj.shape[0] // 2:])
                 
             self.optimizer.zero_grad()
 
@@ -239,24 +239,24 @@ class Trainer:
         loss = 0
         for batch_idx, data in enumerate(self.val_loader):
 
-            image, target = data["image"], data["target"]
+            image = data["image"]
             image = {"v1": image["optical"].to(self.device)}
-            target = target.to(self.device)
 
             with torch.autocast(
                 "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
             ):
                 
-                feat_v = self.model.module.forward_features(image["v1"],
+                feat_con1, _, _, _ = self.model.module.forward_bottleneck(image["v1"],
                                             batch_positions=data["metadata"])
-                feat_con, target_con = self.extract_crop_features(
-                    feat_v,
-                    target.float()
-                    )
 
-                proj = self.projector(feat_con)
-                
-                batch_loss = self.compute_loss(proj, target_con)
+                feat_con2, _, _, _ = self.model.module.forward_bottleneck(image["v1"],
+                                            batch_positions=data["metadata"])
+
+                proj = torch.amax(torch.cat([feat_con1, feat_con2], dim=0), dim=(-2,-1))
+
+                proj = self.projector(proj)
+
+                batch_loss = self.compute_loss(proj[:proj.shape[0] // 2], proj[proj.shape[0] // 2:])
 
                 if batch_idx % self.log_interval == 0: self.logger.info(f"Val batch: {batch_idx+1}/{len(self.val_loader)}")
 
@@ -272,10 +272,9 @@ class Trainer:
             )
         return batch_loss
     
-    def temporal_transform(self, x: torch.Tensor, mask: torch.Tensor):
+    def temporal_transform(self, x: torch.Tensor):
         """
         x:     [B, C, T, H, W]
-        mask:  [B, H, W]
         """
         B, C, Temp, H, W = x.shape
 
@@ -284,21 +283,17 @@ class Trainer:
 
         # Prepare output tensors
         x_out = torch.empty((B,C,Temp,H,W), device=x.device)
-        mask_out = torch.empty((B,H,W), dtype=torch.long, device=x.device)
 
         for b in range(B):
             x_b = x[b*Temp:(b+1)*Temp]  # [T, C, H, W]
 
-            m_b = mask[b].expand(Temp, H, W).unsqueeze(1)
-            sample = self.transform({"image": x_b, "mask": m_b})
+            sample = self.transform({"image": x_b})
 
             x_b = sample["image"].permute(1, 0, 2, 3)
-            m_b = sample["mask"][0].squeeze()
 
             x_out[b] = x_b
-            mask_out[b] = m_b
 
-        return x_out, mask_out
+        return x_out
     
     @torch.no_grad()
     def extract_crop_features(self, features: torch.Tensor, gt_masks: torch.Tensor):
