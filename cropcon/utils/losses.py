@@ -98,42 +98,56 @@ class FocalLoss(torch.nn.Module):
         return 'FocalLoss'
 
 
-class SupContrastiveLoss(torch.nn.Module):
+class SupConLoss(torch.nn.Module):
 
-    def __init__(self, tau=0.1):
+    def __init__(self, tau=0.1, ignore_index=None):
         super().__init__()
         self.tau = tau
+        self.ignore_index = ignore_index
     
     def forward(self, projection, y):
-        """This function generate the loss function based on SupContrast
+        """
+        Supervised Contrastive Loss (Khosla et al.) with ignore_index.
 
         Args:
-            projection (_type_): _description_
-            y (_type_): _description_
+            projection (Tensor): shape (N, D), normalized or unnormalized embeddings
+            y (Tensor): shape (N,), labels
         """
+        device = projection.device
+        n = len(y)
+
+        # mask out ignored samples
+        if self.ignore_index is not None:
+            valid_mask = (y != self.ignore_index)
+            projection = projection[valid_mask]
+            y = y[valid_mask]
+            n = len(y)
+
+        if n <= 1:  # nothing to contrast
+            return torch.tensor(0.0, device=device, requires_grad=True)
+
+        # similarity
         correlation = (projection @ projection.T) / self.tau
         _max = torch.max(correlation, dim=1, keepdim=True)[0]
-
         exp_dot = torch.exp(correlation - _max) + 1e-7
 
-        mask = (y.unsqueeze(1).repeat(1, len(y)) == y).to(projection.device)
-        
-        anchor_out = (1 - torch.eye(len(y))).to(projection.device)
+        # positive mask (same class, excluding self)
+        mask = (y.unsqueeze(1) == y.unsqueeze(0)).to(device)
+        anchor_out = (1 - torch.eye(n, device=device))
+        pij = mask * anchor_out  # positives mask
 
-        pij = mask * anchor_out # positives mask
-
+        # log-probs
         log_prob = -torch.log(
-            exp_dot / torch.sum(exp_dot * anchor_out, dim=1, keepdim=True)
+            exp_dot / (torch.sum(exp_dot * anchor_out, dim=1, keepdim=True) + 1e-7)
         )
 
-        loss_samples = (
-            torch.sum(log_prob * pij, dim=1) / (pij.sum(dim=1) + 1e-7)
-        )
+        # per-sample loss (average over positives for each anchor)
+        loss_samples = torch.sum(log_prob * pij, dim=1) / (pij.sum(dim=1) + 1e-7)
 
         return loss_samples.mean()
 
     def __str__(self):
-        return 'SupContrastiveLoss'
+        return 'SupConLoss'
     
 
 class LogitCompensation(torch.nn.Module): 
@@ -173,16 +187,13 @@ class CropConLoss(torch.nn.Module):
         self.bcl_config = bcl_config
         self.device = device
 
-    def forward(self, protos, proj2, target2, proj3=None, target3=None):
+    def forward(self, protos, proj2, target2):
 
-        feats = F.normalize(torch.cat([proj2, proj3], dim=0), p=2, dim=-1) if proj3 is not None else F.normalize(proj2, p=2, dim=-1)  # [M, D]
-        labels = torch.cat([target2, target3], dim=0).long() if proj3 is not None else target2.long()               # [M]
-        protos = F.normalize(protos, p=2, dim=-1)                           # [C, D]
+        feats = F.normalize(proj2, p=2, dim=-1)
+        labels = target2.long()
+        protos = F.normalize(protos, p=2, dim=-1)
         
-        if self.bcl_config == "original":
-            return self.forward_original(protos, feats, labels)
-        elif self.bcl_config == "class_balanced":
-            return self.forward_class_balanced(protos, feats, labels)
+        return self.forward_original(protos, feats, labels)
 
     def forward_original(self, protos, feats, labels):                       # [C, D]
 
@@ -242,53 +253,6 @@ class CropConLoss(torch.nn.Module):
         prot_cov_reg = (prot_cov_reg.sum() - prot_cov_reg.diagonal().sum()) / D
 
         return loss.mean() + prot_var_reg + 0.1 * prot_cov_reg
-        
-    def forward_class_balanced(self, protos, feats, labels):
-
-        B2 = feats.size(0)
-        C = protos.size(0)
-
-        # Extend features and labels with prototypes
-        features_all = torch.cat([feats, protos], dim=0)                    # [2B + C, D]
-        targets_all = torch.cat([
-            labels,                    # [2B]
-            torch.arange(C, device=self.device)  # [C]
-        ], dim=0)                                                          # [2B + C]
-
-        # Compute label frequencies in the batch (for weighting)
-        batch_cls_count = torch.eye(C, device=self.device)[targets_all].sum(dim=0)  # [C]
-
-        # Compute positive mask
-        mask = torch.eq(labels.unsqueeze(1), targets_all.unsqueeze(0)).float()  # [2B, 2B+C]
-
-        # Mask out self-similarities from region-region comparison
-        logits_mask = torch.ones_like(mask)
-        logits_mask[:, :B2].fill_diagonal_(0.0)  # [2B, 2B]
-
-        # Compute cosine similarity logits
-        logits = torch.matmul(feats, features_all.T) / self.temperature    # [2B, 2B+C]
-
-        # Stability: subtract max
-        logits_max, _ = torch.max(logits, dim=1, keepdim=True)
-        logits = logits - logits_max.detach()
-
-        # Compute weights for class balancing
-        targets_expanded = targets_all.unsqueeze(0).expand(B2, -1)         # [2B, 2B+C]
-        per_ins_weight = batch_cls_count[targets_expanded] - mask         # [2B, 2B+C]
-
-        # Exponentiate logits and mask
-        exp_logits = torch.exp(logits) * logits_mask
-
-        # Compute class-balanced denominator
-        denom = (exp_logits / (per_ins_weight + 1e-12)).sum(dim=1, keepdim=True)  # [2B, 1]
-
-        # Compute log-probabilities
-        log_prob = logits - torch.log(denom + 1e-12)                        # [2B, 2B+C]
-        mean_log_prob_pos = (mask * log_prob).sum(dim=1) / (mask.sum(dim=1) + 1e-12)  # [2B]
-
-        # Final loss
-        loss = -mean_log_prob_pos
-        return loss.mean()
 
     def __str__(self):
         return 'CropConLoss'

@@ -32,7 +32,7 @@ class UTAE_Encoder(Encoder):
     ):
         super().__init__(
             model_name="utae_encoder",
-            encoder_weights=encoder_weights,  # no pre-trained weights, train from scratch
+            encoder_weights=encoder_weights, 
             input_bands=input_bands,
             input_size=input_size,
             embed_dim=0,

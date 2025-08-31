@@ -19,7 +19,6 @@ from cropcon.decoders.base import Decoder
 from cropcon.decoders.base import ProjectionHead
 from cropcon.encoders.base import Encoder
 from cropcon.engine.evaluator import Evaluator
-from cropcon.engine.trainer import Trainer
 from cropcon.utils.collate_fn import get_collate_fn
 from cropcon.utils.logger import init_logger
 from cropcon.utils.subset_sampler import get_subset_indices
@@ -106,6 +105,12 @@ def main(cfg: DictConfig) -> None:
     else:
         rank = int(os.environ["RANK"])
         is_distributed = False
+
+    if not cfg.pretrain: 
+        from cropcon.engine.trainer import Trainer
+    else:
+        from cropcon.engine.pretrainer import Trainer
+
     # true if training else false
     train_run = cfg.train
     if train_run:
@@ -134,7 +139,6 @@ def main(cfg: DictConfig) -> None:
                     f"alpha{str(cfg.task.trainer.alpha).replace('.', '_')}",
                     f"tau{str(cfg.task.trainer.tau).replace('.', '_')}",
                     f"fold{cfg.dataset.fold_config}",
-                    f"{cfg.task.trainer.bcl_config}"
                     ],
             )
             cfg["wandb_run_id"] = wandb.run.id
@@ -162,7 +166,6 @@ def main(cfg: DictConfig) -> None:
                     f"alpha{str(cfg.task.trainer.alpha).replace('.', '_')}",
                     f"tau{str(cfg.task.trainer.tau).replace('.', '_')}",
                     f"fold{cfg.dataset.fold_config}",
-                    f"{cfg.task.trainer.bcl_config}"
                     ],
             )
 
@@ -196,7 +199,7 @@ def main(cfg: DictConfig) -> None:
             output_device=local_rank,
             find_unused_parameters=cfg.finetune,
         )
-    if cfg.task.trainer.alpha != 0.0:
+    if cfg.task.trainer.alpha != 0.0 or cfg.pretrain:
         projector = torch.nn.parallel.DistributedDataParallel(
             ProjectionHead(
                 embed_dim=decoder.module.dec_topology[0],
@@ -331,7 +334,7 @@ def main(cfg: DictConfig) -> None:
             {'params': non_encoder_params(decoder.module), 'lr': cfg.optimizer.lr},]
         if cfg.finetune:
             params.append({'params': decoder.module.encoder.parameters(), 'lr': cfg.optimizer.lr * cfg.ft_rate})
-        if cfg.task.trainer.alpha != 0:
+        if cfg.task.trainer.alpha != 0 or cfg.pretrain:
             params.append({'params': projector.parameters()})
 
         optimizer = instantiate(cfg.optimizer, params=None)
@@ -346,95 +349,112 @@ def main(cfg: DictConfig) -> None:
             total_iters=len(train_loader) * cfg.task.trainer.n_epochs,
         )
         
-        val_evaluator: Evaluator = instantiate(
-                cfg.task.evaluator, val_loader=val_loader, exp_dir=exp_dir, device=device,
-                dataset_name=cfg.dataset.dataset_name
-            )
-
-        trainer: Trainer = instantiate(
-                cfg.task.trainer,
-                model=decoder,
-                projector=projector,
-                projection_dim=cfg.projection_dim,
-                train_loader=train_loader,
-                lr_scheduler=lr_scheduler,
-                optimizer=optimizer,
-                criterion=criterion,
-                distribution=cfg.dataset.distribution,
-                evaluator=val_evaluator,
-                exp_dir=exp_dir,
-                device=device,
-            )
+        if not cfg.pretrain:
+            val_evaluator: Evaluator = instantiate(
+                    cfg.task.evaluator, val_loader=val_loader, exp_dir=exp_dir, device=device,
+                    dataset_name=cfg.dataset.dataset_name
+                )
+            trainer: Trainer = instantiate(
+                    cfg.task.trainer,
+                    model=decoder,
+                    projector=projector,
+                    projection_dim=cfg.projection_dim,
+                    train_loader=train_loader,
+                    lr_scheduler=lr_scheduler,
+                    optimizer=optimizer,
+                    criterion=criterion,
+                    distribution=cfg.dataset.distribution,
+                    evaluator=val_evaluator,
+                    exp_dir=exp_dir,
+                    device=device,
+                )
+        else:
+            val_evaluator = None
+            trainer: Trainer = instantiate(
+                    cfg.task.trainer,
+                    model=decoder,
+                    projector=projector,
+                    projection_dim=cfg.projection_dim,
+                    train_loader=train_loader,
+                    val_loader=val_loader,
+                    lr_scheduler=lr_scheduler,
+                    optimizer=optimizer,
+                    criterion=criterion,
+                    distribution=cfg.dataset.distribution,
+                    evaluator=val_evaluator,
+                    exp_dir=exp_dir,
+                    device=device,
+                )
         # resume training if model_checkpoint is provided
         if cfg.ckpt_dir is not None:
             trainer.load_model(cfg.ckpt_dir)
 
         trainer.train()
 
-    if cfg.dataset.support_test:
-        # Evaluation
-        test_preprocessor = instantiate(
-            cfg.preprocessing.test,
-            dataset_cfg=cfg.dataset,
-            encoder_cfg=cfg.encoder,
-            _recursive_=False,
-        )
-        # get datasets
-        raw_test_dataset: RawGeoFMDataset = instantiate(cfg.dataset, split="test")
-        test_dataset = GeoFMDataset(raw_test_dataset, test_preprocessor)
-
-        test_loader = DataLoader(
-            test_dataset,
-            sampler=DistributedSampler(test_dataset),
-            batch_size=cfg.test_batch_size,
-            num_workers=cfg.test_num_workers,
-            pin_memory=True,
-            persistent_workers=False,
-            drop_last=False,
-            collate_fn=collate_fn,
-        )
-        test_evaluator: Evaluator = instantiate(
-            cfg.task.evaluator, val_loader=test_loader, exp_dir=exp_dir, device=device,
-            dataset_name=cfg.dataset.dataset_name
-        )
-
-        model_ckpt_path = get_best_model_ckpt_path(exp_dir) if not cfg.use_final_ckpt else get_final_model_ckpt_path(exp_dir)
-        metrics, _ = test_evaluator.evaluate(decoder, "test_model", model_ckpt_path)
-
-        logger.info(
-            f"Best_mIoU: {metrics['mIoU']}\n"
-            f"Best_mF1: {metrics['mF1']}\n"
-            f"Best_mAcc: {metrics['mAcc']}\n"
-        )
-
-        if cfg.use_wandb and rank == 0:
-            wandb.log(
-                {
-                    "Best_mIoU": metrics["mIoU"],
-                    "Best_mF1": metrics["mF1"],
-                    "Best_mAcc": metrics["mAcc"]
-                }
+    if not cfg.pretrain:
+        if cfg.dataset.support_test:
+            # Evaluation
+            test_preprocessor = instantiate(
+                cfg.preprocessing.test,
+                dataset_cfg=cfg.dataset,
+                encoder_cfg=cfg.encoder,
+                _recursive_=False,
             )
-            wandb.finish()
+            # get datasets
+            raw_test_dataset: RawGeoFMDataset = instantiate(cfg.dataset, split="test")
+            test_dataset = GeoFMDataset(raw_test_dataset, test_preprocessor)
 
-    else:
-        model_dict = torch.load(get_best_model_ckpt_path(exp_dir), map_location=device, weights_only=False)
-        
-        logger.info(
-            f"Best_mIoU: {model_dict['mIoU']}\n"
-            f"Best_mF1: {model_dict['mF1']}\n"
-            f"Best_mAcc: {model_dict['mAcc']}\n"
-        )
-
-        if cfg.use_wandb and rank == 0:
-            wandb.log(
-                {
-                    "Best_mIoU": model_dict["mIoU"],
-                    "Best_mF1": model_dict["mF1"],
-                    "Best_mAcc": model_dict["mAcc"]
-                }
+            test_loader = DataLoader(
+                test_dataset,
+                sampler=DistributedSampler(test_dataset),
+                batch_size=cfg.test_batch_size,
+                num_workers=cfg.test_num_workers,
+                pin_memory=True,
+                persistent_workers=False,
+                drop_last=False,
+                collate_fn=collate_fn,
             )
-            wandb.finish()
+            test_evaluator: Evaluator = instantiate(
+                cfg.task.evaluator, val_loader=test_loader, exp_dir=exp_dir, device=device,
+                dataset_name=cfg.dataset.dataset_name
+            )
+
+            model_ckpt_path = get_best_model_ckpt_path(exp_dir) if not cfg.use_final_ckpt else get_final_model_ckpt_path(exp_dir)
+            metrics, _ = test_evaluator.evaluate(decoder, "test_model", model_ckpt_path)
+
+            logger.info(
+                f"Best_mIoU: {metrics['mIoU']}\n"
+                f"Best_mF1: {metrics['mF1']}\n"
+                f"Best_mAcc: {metrics['mAcc']}\n"
+            )
+
+            if cfg.use_wandb and rank == 0:
+                wandb.log(
+                    {
+                        "Best_mIoU": metrics["mIoU"],
+                        "Best_mF1": metrics["mF1"],
+                        "Best_mAcc": metrics["mAcc"]
+                    }
+                )
+
+        else:
+            model_dict = torch.load(get_best_model_ckpt_path(exp_dir), map_location=device, weights_only=False)
+            
+            logger.info(
+                f"Best_mIoU: {model_dict['mIoU']}\n"
+                f"Best_mF1: {model_dict['mF1']}\n"
+                f"Best_mAcc: {model_dict['mAcc']}\n"
+            )
+
+            if cfg.use_wandb and rank == 0:
+                wandb.log(
+                    {
+                        "Best_mIoU": model_dict["mIoU"],
+                        "Best_mF1": model_dict["mF1"],
+                        "Best_mAcc": model_dict["mAcc"]
+                    }
+                )
+    wandb.finish()
 
     torch.distributed.destroy_process_group()
 

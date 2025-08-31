@@ -1,0 +1,3 @@
+_target_: cropcon.utils.losses.SupConLoss
+tau: ${task.trainer.tau}
+ignore_index: ${dataset.ignore_index}

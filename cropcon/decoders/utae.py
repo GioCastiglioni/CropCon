@@ -43,7 +43,6 @@ class UTAE(Decoder):
             num_classes=num_classes,
             finetune=finetune,
         )
-        assert self.finetune  # the UNet encoder should always be trained
 
         self.model_name = 'UTAE_SemanticSegmentation'
         self.align_corners = False
@@ -89,6 +88,23 @@ class UTAE(Decoder):
 
     def forward_features(self, input: torch.Tensor, batch_positions=None) -> torch.Tensor:
 
+        out, feature_maps, pad_mask, att = self.forward_bottleneck(input, batch_positions)
+
+        # DECODER
+        for i in range(len(self.topology) - 1):
+            if input.shape[1] > 1:
+                skip = self.temporal_aggregator(
+                    feature_maps[-(i + 2)],
+                    pad_mask=pad_mask,
+                    attn_mask=att
+                )
+            else:
+                skip = feature_maps[-(i + 2)].squeeze(dim=1)
+            out = self.up_blocks[i](out, skip)
+
+        return out
+
+    def forward_bottleneck(self, input: torch.Tensor, batch_positions=None):
         input = input.permute(0,2,1,3,4)
         B, T, C, H, W = input.shape
 
@@ -108,26 +124,11 @@ class UTAE(Decoder):
                 batch_positions=batch_positions.to(out.device),
                 pad_mask=pad_mask
             )
-            use_temporal_aggregation = True
         else:
             # Skip temporal encoder and use last spatial feature map directly
             out = feature_maps[-1].squeeze(dim=1)  # (B, C, H, W)
             att = None
-            use_temporal_aggregation = False
-
-        # DECODER
-        for i in range(len(self.topology) - 1):
-            if use_temporal_aggregation:
-                skip = self.temporal_aggregator(
-                    feature_maps[-(i + 2)],
-                    pad_mask=pad_mask,
-                    attn_mask=att
-                )
-            else:
-                skip = feature_maps[-(i + 2)].squeeze(dim=1)
-            out = self.up_blocks[i](out, skip)
-
-        return out
+        return out, feature_maps, pad_mask, att
 
 
 class TemporallySharedBlock(nn.Module):
