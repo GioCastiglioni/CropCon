@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader, Subset
 
 from cropcon.utils.logger import RunningAverageMeter, sec_to_hm
 from cropcon.utils.losses import CropConLoss
-from cropcon.utils.utils import RandomChannelDropout, ConsistentTransform
+from cropcon.utils.utils import ConsistentTransform
 from scipy.ndimage import label as lbl
 from grokfast import gradfilter_ma, gradfilter_ema
 
@@ -112,14 +112,13 @@ class Trainer:
             import wandb
 
             self.wandb = wandb
-
-        self.channel_drop = T.Compose([RandomChannelDropout(p=0.5, max_drop=5)])
         
         self.alpha = alpha
 
         self.projector = projector
         
-        self.transform = ConsistentTransform(h_w=self.model.module.encoder.input_size, degrees=45, p=0.5).to(self.device)
+        self.transform1 = ConsistentTransform(h_w=self.model.module.encoder.input_size, degrees=45, view=1).to(self.device)
+        self.transform2 = ConsistentTransform(h_w=self.model.module.encoder.input_size, degrees=45, view=2).to(self.device)
 
         self.n_classes = self.model.module.num_classes
     
@@ -164,11 +163,8 @@ class Trainer:
         end_time = time.time()
         for batch_idx, data in enumerate(self.train_loader):
 
-            image = data["image"]
-            image = {"v1": image["optical"].to(self.device)}
-
-            with torch.no_grad():
-                image["v2"] = self.temporal_transform(image["v1"])
+            image = {"v1": self.temporal_transform(data["image"]["optical"].to(self.device), view=1)}
+            image["v2"] = self.temporal_transform(data["image"]["optical"].to(self.device), view=2)
 
             self.training_stats["data_time"].update(time.time() - end_time)
 
@@ -176,17 +172,21 @@ class Trainer:
                 "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
             ):
                 
-                feat_con1, _, _, _ = self.model.module.forward_bottleneck(image["v1"],
-                                            batch_positions=data["metadata"])
+                feat_con, _, _, _ = self.model.module.forward_bottleneck(
+                    torch.cat([
+                        image["v1"],
+                        image["v2"]], dim=0),
+                    batch_positions=torch.cat([data["metadata"], data["metadata"]], dim=0)
+                )
 
-                feat_con2, _, _, _ = self.model.module.forward_bottleneck(image["v2"],
-                                            batch_positions=data["metadata"])
+                feat_con = feat_con.mean(dim=(-2,-1))
 
-                proj = torch.amax(torch.cat([feat_con1, feat_con2], dim=0), dim=(-2,-1))
+                proj = self.projector(feat_con)
 
-                proj = self.projector(proj)
-
-                loss = self.compute_loss(proj[:proj.shape[0] // 2], proj[proj.shape[0] // 2:])
+                loss = self.compute_loss(
+                    proj[:proj.shape[0] // 2],
+                    proj[proj.shape[0] // 2:]
+                )
                 
             self.optimizer.zero_grad()
 
@@ -239,22 +239,23 @@ class Trainer:
         loss = 0
         for batch_idx, data in enumerate(self.val_loader):
 
-            image = data["image"]
-            image = {"v1": image["optical"].to(self.device)}
+            image = {"v1": self.temporal_transform(data["image"]["optical"].to(self.device), view=1)}
+            image["v2"] = self.temporal_transform(data["image"]["optical"].to(self.device), view=2)
 
             with torch.autocast(
                 "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
             ):
                 
-                feat_con1, _, _, _ = self.model.module.forward_bottleneck(image["v1"],
-                                            batch_positions=data["metadata"])
+                feat_con, _, _, _ = self.model.module.forward_bottleneck(
+                    torch.cat([
+                        image["v1"],
+                        image["v2"]], dim=0),
+                    batch_positions=torch.cat([data["metadata"], data["metadata"]], dim=0)
+                )
 
-                feat_con2, _, _, _ = self.model.module.forward_bottleneck(image["v1"],
-                                            batch_positions=data["metadata"])
+                feat_con = feat_con.mean(dim=(-2,-1))
 
-                proj = torch.amax(torch.cat([feat_con1, feat_con2], dim=0), dim=(-2,-1))
-
-                proj = self.projector(proj)
+                proj = self.projector(feat_con)
 
                 batch_loss = self.compute_loss(proj[:proj.shape[0] // 2], proj[proj.shape[0] // 2:])
 
@@ -272,7 +273,7 @@ class Trainer:
             )
         return batch_loss
     
-    def temporal_transform(self, x: torch.Tensor):
+    def temporal_transform(self, x: torch.Tensor, view: int = 1):
         """
         x:     [B, C, T, H, W]
         """
@@ -287,7 +288,7 @@ class Trainer:
         for b in range(B):
             x_b = x[b*Temp:(b+1)*Temp]  # [T, C, H, W]
 
-            sample = self.transform({"image": x_b})
+            sample = self.transform1({"image": x_b}) if view == 1 else self.transform2({"image": x_b})
 
             x_b = sample["image"].permute(1, 0, 2, 3)
 

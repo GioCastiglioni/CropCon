@@ -125,33 +125,32 @@ class RandomChannelDropout(torch.nn.Module):
         self.p = p
         self.max_drop = max_drop
 
-    def forward(self, x, drop_indices=None):
+    def forward(self, img):
         """
-        x: [T, C, H, W] or [C, H, W]
-        drop_indices: if provided, drops the same indices
+        x: [T, C, H, W]
         """
-        if drop_indices is None and torch.rand(1).item() < self.p:
-            C = x.shape[1]
-            num_drop = torch.randint(1, self.max_drop + 1, ())
-            drop_indices = torch.randperm(C)[:num_drop]
+        if "image" in img:
+            x = img["image"].clone()
+            if torch.rand(1).item() < self.p:
+                C = x.shape[1]
+                num_drop = torch.randint(1, self.max_drop + 1, ())
+                drop_indices = torch.randperm(C)[:num_drop]
+                x[:, drop_indices, :, :] = 0
+                img["image"] = x
 
-        if drop_indices is not None:
-            # Zero out selected channels out-of-place
-            mask = torch.ones_like(x)
-            mask[:, drop_indices, :, :] = 0
-            x = x * mask
-
-        return x, drop_indices
+        return img
 
 
 class ConsistentTransform(torch.nn.Module):
-    def __init__(self, h_w=128 ,degrees=30, p=0.5):
+    def __init__(self, h_w=128, degrees=30, view: int = 1):
         super().__init__()
         self.degrees = degrees
         self.transforms = v2.Compose([
-            v2.RandomResizedCrop(size=(h_w, h_w), scale=(0.8, 1.0)),
-            v2.RandomHorizontalFlip(p=p),
-            v2.RandomVerticalFlip(p=p),
+            RandomChannelDropout(p=0.2, max_drop=5),
+            v2.RandomResizedCrop(size=(h_w, h_w), scale=(0.2, 1.0)),
+            v2.RandomHorizontalFlip(p=0.5),
+            v2.RandomVerticalFlip(p=0.5),
+            v2.RandomApply([v2.GaussianBlur(kernel_size=11, sigma=(0.1, 2.0))], p=1.0 if view == 1 else 0.1)
             ])
 
     def forward(self, sample):
