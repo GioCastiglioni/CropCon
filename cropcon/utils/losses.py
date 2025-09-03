@@ -44,10 +44,10 @@ class VICReg(torch.nn.Module):
         loss_inv = self.inv(z_a, z_b)
 
         std_z_a = torch.sqrt(
-            z_a.var(dim=0) + self.variance_loss_epsilon
+            z_a.var(dim=0, unbiased=False) + self.variance_loss_epsilon
         )
         std_z_b = torch.sqrt(
-            z_b.var(dim=0) + self.variance_loss_epsilon
+            z_b.var(dim=0, unbiased=False) + self.variance_loss_epsilon
         )
         loss_v_a = torch.mean(F.relu(1 - std_z_a))
         loss_v_b = torch.mean(F.relu(1 - std_z_b))
@@ -58,8 +58,8 @@ class VICReg(torch.nn.Module):
         z_a = z_a - z_a.mean(dim=0)
         z_b = z_b - z_b.mean(dim=0)
 
-        cov_z_a = ((z_a.T @ z_a) / (N - 1)).square()  # DxD
-        cov_z_b = ((z_b.T @ z_b) / (N - 1)).square()  # DxD
+        cov_z_a = ((z_a.T @ z_a) / N).square()  # DxD
+        cov_z_b = ((z_b.T @ z_b) / N).square()  # DxD
         loss_c_a = (cov_z_a.sum() - cov_z_a.diagonal().sum()) / D
         loss_c_b = (cov_z_b.sum() - cov_z_b.diagonal().sum()) / D
         loss_cov = loss_c_a + loss_c_b
@@ -73,6 +73,43 @@ class VICReg(torch.nn.Module):
         loss = weighted_inv + weighted_var + weighted_cov
         if each_comp: return loss.mean(), loss_var, loss_inv, loss_cov
         else: return loss.mean()
+
+
+class SimCLR(torch.nn.Module):
+    def __init__(self, tau: float = 0.1):
+        super().__init__()
+        self.temperature = tau
+
+    def forward(self, z_a, z_b):
+        """
+        z_a: [N, D] tensor
+        z_b: [N, D] tensor
+        """
+
+        N = z_a.shape[0]
+        # Normalize representations
+        z_a = F.normalize(z_a, dim=1)
+        z_b = F.normalize(z_b, dim=1)
+
+        # Concatenate for 2N samples
+        z = torch.cat([z_a, z_b], dim=0)  # [2N, D]
+
+        # Compute similarity matrix
+        sim = torch.matmul(z, z.T) / self.temperature  # [2N, 2N]
+
+        # Mask self-similarity
+        mask = torch.eye(2 * N, dtype=torch.bool, device=z.device)
+        sim.masked_fill_(mask, -float("inf"))
+
+        # Positive pairs: i with i+N (first with second view)
+        targets = torch.arange(N, device=z.device)
+        targets = torch.cat([targets + N, targets], dim=0)  # [2N]
+
+        # Cross-entropy loss
+        loss = F.cross_entropy(sim, targets)
+
+        return loss
+
 
 class DICELoss(torch.nn.Module):
     def __init__(self, ignore_index: int) -> None:

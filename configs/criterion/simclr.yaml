@@ -1,0 +1,2 @@
+_target_: cropcon.utils.losses.SimCLR
+tau: ${task.trainer.tau}
