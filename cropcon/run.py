@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from cropcon.datasets.base import GeoFMDataset, GeoFMSubset, RawGeoFMDataset
 from cropcon.decoders.base import Decoder
-from cropcon.decoders.base import ProjectionHead
+from cropcon.decoders.base import ProjectionHead, QueryMultiHeadPoolHybrid
 from cropcon.encoders.base import Encoder
 from cropcon.engine.evaluator import Evaluator
 from cropcon.utils.collate_fn import get_collate_fn
@@ -202,7 +202,7 @@ def main(cfg: DictConfig) -> None:
     if cfg.task.trainer.alpha != 0.0 or cfg.pretrain:
         projector = torch.nn.parallel.DistributedDataParallel(
             ProjectionHead(
-                embed_dim=decoder.module.dec_topology[0] if not cfg.pretrain else decoder.module.dec_topology[-1],
+                embed_dim=decoder.module.dec_topology[0],
                 mlp_hidden_dim=512,
                 projection_dim=cfg.projection_dim,
                 attention=False).to(device),
@@ -210,6 +210,17 @@ def main(cfg: DictConfig) -> None:
                 output_device=local_rank,
                 find_unused_parameters=False,
             )
+        aggregator = torch.nn.parallel.DistributedDataParallel(
+            QueryMultiHeadPoolHybrid(
+                decoder.module.encoder.topology[0],
+                num_heads=4,
+                dropout=0.0,
+                use_learned_bias=True,
+                detach_mean=True).to(device),
+                device_ids=[local_rank],
+                output_device=local_rank,
+                find_unused_parameters=False,
+        )
     else: 
         projector = None
 
@@ -336,6 +347,7 @@ def main(cfg: DictConfig) -> None:
             params.append({'params': decoder.module.encoder.parameters(), 'lr': cfg.optimizer.lr * cfg.ft_rate})
         if cfg.task.trainer.alpha != 0 or cfg.pretrain:
             params.append({'params': projector.parameters()})
+            params.append({'params': aggregator.parameters()})
 
         optimizer = instantiate(cfg.optimizer, params=None)
         optimizer = optimizer(params=params)
@@ -374,6 +386,7 @@ def main(cfg: DictConfig) -> None:
                     cfg.task.trainer,
                     model=decoder,
                     projector=projector,
+                    aggregator=aggregator,
                     projection_dim=cfg.projection_dim,
                     train_loader=train_loader,
                     val_loader=val_loader,

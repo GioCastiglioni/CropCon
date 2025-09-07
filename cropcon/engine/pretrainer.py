@@ -26,9 +26,11 @@ class Trainer:
         self,
         model: nn.Module,
         projector: nn.Module,
+        aggregator: nn.Module,
         train_loader: DataLoader,
         val_loader: DataLoader,
         criterion: nn.Module,
+        on_logits: bool,
         distribution: list,
         optimizer: Optimizer,
         lr_scheduler: LRScheduler,
@@ -87,6 +89,7 @@ class Trainer:
         self.log_interval = log_interval
         self.projection_dim=projection_dim
         self.grokfast = False
+        self.on_logits = on_logits
 
         self.training_stats = {
             name: RunningAverageMeter(length=self.batch_per_epoch)
@@ -116,9 +119,10 @@ class Trainer:
         self.alpha = alpha
 
         self.projector = projector
+
+        self.aggregator = aggregator
         
-        self.transform1 = ConsistentTransform(h_w=self.model.module.encoder.input_size, degrees=45, view=1).to(self.device)
-        self.transform2 = ConsistentTransform(h_w=self.model.module.encoder.input_size, degrees=45, view=2).to(self.device)
+        self.transform = ConsistentTransform(h_w=self.model.module.encoder.input_size, degrees=45, view=1).to(self.device)
 
         self.n_classes = self.model.module.num_classes
     
@@ -163,29 +167,25 @@ class Trainer:
         end_time = time.time()
         for batch_idx, data in enumerate(self.train_loader):
 
-            image = {"v1": self.temporal_transform(data["image"]["optical"].to(self.device), view=1)}
-            image["v2"] = self.temporal_transform(data["image"]["optical"].to(self.device), view=2)
+            image, mask = self.temporal_transform(data["image"]["optical"].to(self.device), data["target"].to(self.device))
+            image = {"v1": image}
 
             self.training_stats["data_time"].update(time.time() - end_time)
 
             with torch.autocast(
                 "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
             ):
-                
-                feat_con, _, _, _ = self.model.module.forward_bottleneck(
-                    torch.cat([
-                        image["v1"],
-                        image["v2"]], dim=0),
-                    batch_positions=torch.cat([data["metadata"], data["metadata"]], dim=0)
-                )
+                feat_con = self.model.module.forward_features(image["v1"], batch_positions=data["metadata"])
 
-                feat_con = feat_con.mean(dim=(-2,-1))
+                feat_con, target_con = self.extract_crop_features(
+                        feat_con,
+                        mask.float()
+                        )
 
-                proj = self.projector(feat_con)
+                feat_con = self.projector(feat_con)
 
                 loss = self.compute_loss(
-                    proj[:proj.shape[0] // 2],
-                    proj[proj.shape[0] // 2:]
+                    feat_con, target_con
                 )
                 
             self.optimizer.zero_grad()
@@ -239,25 +239,24 @@ class Trainer:
         loss = 0
         for batch_idx, data in enumerate(self.val_loader):
 
-            image = {"v1": self.temporal_transform(data["image"]["optical"].to(self.device), view=1)}
-            image["v2"] = self.temporal_transform(data["image"]["optical"].to(self.device), view=2)
+            mask = data["target"].to(self.device)
+            image = {"v1": data["image"]["optical"].to(self.device)}
+
+            self.training_stats["data_time"].update(time.time() - end_time)
 
             with torch.autocast(
                 "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
             ):
-                
-                feat_con, _, _, _ = self.model.module.forward_bottleneck(
-                    torch.cat([
-                        image["v1"],
-                        image["v2"]], dim=0),
-                    batch_positions=torch.cat([data["metadata"], data["metadata"]], dim=0)
-                )
+                feat_con = self.model.module.forward_features(image["v1"], batch_positions=data["metadata"])
 
-                feat_con = feat_con.mean(dim=(-2,-1))
+                feat_con, target_con = self.extract_crop_features(
+                        feat_con,
+                        mask.float()
+                        )
 
-                proj = self.projector(feat_con)
+                feat_con = self.projector(feat_con)
 
-                batch_loss = self.compute_loss(proj[:proj.shape[0] // 2], proj[proj.shape[0] // 2:])
+                batch_loss = self.compute_loss(feat_con, target_con)
 
                 if batch_idx % self.log_interval == 0: self.logger.info(f"Val batch: {batch_idx+1}/{len(self.val_loader)}")
 
@@ -272,10 +271,11 @@ class Trainer:
                 step = epoch * len(self.train_loader)
             )
         return batch_loss
-    
-    def temporal_transform(self, x: torch.Tensor, view: int = 1):
+
+    def temporal_transform(self, x: torch.Tensor, mask: torch.Tensor):
         """
         x:     [B, C, T, H, W]
+        mask:  [B, H, W]
         """
         B, C, Temp, H, W = x.shape
 
@@ -284,20 +284,28 @@ class Trainer:
 
         # Prepare output tensors
         x_out = torch.empty((B,C,Temp,H,W), device=x.device)
+        mask_out = torch.empty((B,H,W), dtype=torch.long, device=x.device)
 
         for b in range(B):
             x_b = x[b*Temp:(b+1)*Temp]  # [T, C, H, W]
 
-            sample = self.transform1({"image": x_b}) if view == 1 else self.transform2({"image": x_b})
+            m_b = mask[b].expand(Temp, H, W).unsqueeze(1)
+            sample = self.transform({"image": x_b, "mask": m_b})
 
             x_b = sample["image"].permute(1, 0, 2, 3)
+            m_b = sample["mask"][0].squeeze()
 
             x_out[b] = x_b
+            mask_out[b] = m_b
 
-        return x_out
+        return x_out, mask_out
     
     @torch.no_grad()
     def extract_crop_features(self, features: torch.Tensor, gt_masks: torch.Tensor):
+        """
+        features: [B, D, H, W]
+        gt_masks: [B, H, W]
+        """
         B, D, H, W = features.shape
         device = features.device
         crop_vecs = []
@@ -319,14 +327,18 @@ class Trainer:
                     if crop_mask.sum() == 0:
                         continue
 
-                    # Convert to torch indices
+                    # indices de píxeles de este objeto
                     y_idx, x_idx = np.nonzero(crop_mask)
                     y_idx = torch.from_numpy(y_idx).to(device)
                     x_idx = torch.from_numpy(x_idx).to(device)
 
-                    crop_feat = feat[:, y_idx, x_idx]  # [D, N]
-                    crop_avg = crop_feat.mean(dim=1)   # [D]
-                    crop_vecs.append(crop_avg)
+                    # extraer features de píxeles
+                    crop_feat = feat[:, y_idx, x_idx]     # [D, N]
+                    crop_feat = crop_feat.transpose(0, 1) # [N, D]
+
+                    # pasar por el agregador
+                    crop_vec = self.aggregator(crop_feat)   # -> [D]
+                    crop_vecs.append(crop_vec)
                     crop_labels.append(int(class_id))
 
         if not crop_vecs:

@@ -9,6 +9,7 @@ trainer:
   exp_dir: null
   device: null
   criterion: null
+  on_logits: false
 
   # params to adapt
   n_epochs: 80

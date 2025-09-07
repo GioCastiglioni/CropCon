@@ -146,7 +146,7 @@ class ConsistentTransform(torch.nn.Module):
         super().__init__()
         self.degrees = degrees
         self.transforms = v2.Compose([
-            RandomChannelDropout(p=0.2, max_drop=5),
+            #RandomChannelDropout(p=0.2, max_drop=5),
             v2.RandomResizedCrop(size=(h_w, h_w), scale=(0.2, 1.0)),
             v2.RandomHorizontalFlip(p=0.5),
             v2.RandomVerticalFlip(p=0.5),
