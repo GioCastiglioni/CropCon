@@ -202,7 +202,7 @@ def main(cfg: DictConfig) -> None:
     if cfg.task.trainer.alpha != 0.0 or cfg.pretrain:
         projector = torch.nn.parallel.DistributedDataParallel(
             ProjectionHead(
-                embed_dim=decoder.module.dec_topology[0],
+                embed_dim=decoder.module.out_conv.in_channels,
                 mlp_hidden_dim=512,
                 projection_dim=cfg.projection_dim,
                 attention=False).to(device),
@@ -212,7 +212,7 @@ def main(cfg: DictConfig) -> None:
             )
         aggregator = torch.nn.parallel.DistributedDataParallel(
             QueryMultiHeadPoolHybrid(
-                decoder.module.encoder.topology[0],
+                decoder.module.out_conv.in_channels,
                 num_heads=4,
                 dropout=0.0,
                 use_learned_bias=True,
