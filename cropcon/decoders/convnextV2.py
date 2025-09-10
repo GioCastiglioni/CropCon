@@ -30,7 +30,7 @@ class ConvNext(Decoder):
             finetune=finetune,
         )
 
-        self.model_name = 'ConvNext_Segmentation'
+        self.model_name = 'ConvNeXtV2_Segmentation'
         self.align_corners = False
         self.topology = encoder.topology
         self.in_channels = deepcopy(self.topology)
