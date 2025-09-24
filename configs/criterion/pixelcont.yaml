@@ -1,0 +1,5 @@
+_target_: cropcon.utils.losses.SupervisedPixelContrastiveLoss
+resize_size: ${dataset.img_size}
+ignore_index: ${dataset.ignore_index}
+temperature: ${task.trainer.tau}
+within_image: False

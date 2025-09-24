@@ -25,8 +25,6 @@ class Trainer:
     def __init__(
         self,
         model: nn.Module,
-        projector: nn.Module,
-        aggregator: nn.Module,
         train_loader: DataLoader,
         val_loader: DataLoader,
         criterion: nn.Module,
@@ -45,7 +43,6 @@ class Trainer:
         log_interval: int,
         tau: float,
         alpha: float,
-        projection_dim: int,
     ):
         """Initialize the Trainer.
 
@@ -87,7 +84,6 @@ class Trainer:
         self.ckpt_interval = ckpt_interval
         self.eval_interval = eval_interval
         self.log_interval = log_interval
-        self.projection_dim=projection_dim
         self.grokfast = False
         self.on_logits = on_logits
 
@@ -117,10 +113,6 @@ class Trainer:
             self.wandb = wandb
         
         self.alpha = alpha
-
-        self.projector = projector
-
-        self.aggregator = aggregator
         
         self.transform = ConsistentTransform(h_w=self.model.module.encoder.input_size, degrees=45, view=1).to(self.device)
 
@@ -167,26 +159,22 @@ class Trainer:
         end_time = time.time()
         for batch_idx, data in enumerate(self.train_loader):
 
-            image, mask = self.temporal_transform(data["image"]["optical"].to(self.device), data["target"].to(self.device))
-            image = {"v1": image}
+            
+            image = {"v1": data["image"]["optical"].to(self.device)}
+            mask = {"v1": data["target"].to(self.device)}
+
+            image["v2"], mask["v2"] = self.temporal_transform(image["v1"], mask["v1"])
 
             self.training_stats["data_time"].update(time.time() - end_time)
 
             with torch.autocast(
                 "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
             ):
-                feat_con = self.model.module.forward_features(image["v1"], batch_positions=data["metadata"])
+                feat_v1 = self.model.module.forward_features(image["v1"], batch_positions=data["metadata"])
 
-                feat_con, target_con = self.extract_crop_features(
-                        feat_con,
-                        mask.float()
-                        )
+                feat_v2 = self.model.module.forward_features(image["v2"], batch_positions=data["metadata"])
 
-                feat_con = self.projector(feat_con)
-
-                loss = self.compute_loss(
-                    feat_con, target_con
-                )
+                loss = self.criterion(feat_v1, feat_v2, mask["v1"], mask["v2"])
                 
             self.optimizer.zero_grad()
 
@@ -239,24 +227,21 @@ class Trainer:
         loss = 0
         for batch_idx, data in enumerate(self.val_loader):
 
-            mask = data["target"].to(self.device)
             image = {"v1": data["image"]["optical"].to(self.device)}
+            mask = {"v1": data["target"].to(self.device)}
+
+            image["v2"], mask["v2"] = self.temporal_transform(image["v1"], mask["v1"])
 
             self.training_stats["data_time"].update(time.time() - end_time)
 
             with torch.autocast(
                 "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
             ):
-                feat_con = self.model.module.forward_features(image["v1"], batch_positions=data["metadata"])
+                feat_v1 = self.model.module.forward_features(image["v1"], batch_positions=data["metadata"])
 
-                feat_con, target_con = self.extract_crop_features(
-                        feat_con,
-                        mask.float()
-                        )
+                feat_v2 = self.model.module.forward_features(image["v2"], batch_positions=data["metadata"])
 
-                feat_con = self.projector(feat_con)
-
-                batch_loss = self.compute_loss(feat_con, target_con)
+                batch_loss = self.criterion(feat_v1, feat_v2, mask["v1"], mask["v2"])
 
                 if batch_idx % self.log_interval == 0: self.logger.info(f"Val batch: {batch_idx+1}/{len(self.val_loader)}")
 
@@ -299,55 +284,6 @@ class Trainer:
             mask_out[b] = m_b
 
         return x_out, mask_out
-    
-    @torch.no_grad()
-    def extract_crop_features(self, features: torch.Tensor, gt_masks: torch.Tensor):
-        """
-        features: [B, D, H, W]
-        gt_masks: [B, H, W]
-        """
-        B, D, H, W = features.shape
-        device = features.device
-        crop_vecs = []
-        crop_labels = []
-
-        for b in range(B):
-            feat = features[b]  # [D, H, W]
-            gt_mask_np = gt_masks[b].cpu().numpy()
-
-            for class_id in np.unique(gt_mask_np):
-                if class_id == self.criterion.ignore_index:
-                    continue
-
-                class_mask = (gt_mask_np == class_id).astype(np.uint8)
-                labeled, num_features = lbl(class_mask)
-
-                for i in range(1, num_features + 1):
-                    crop_mask = (labeled == i)
-                    if crop_mask.sum() == 0:
-                        continue
-
-                    # indices de píxeles de este objeto
-                    y_idx, x_idx = np.nonzero(crop_mask)
-                    y_idx = torch.from_numpy(y_idx).to(device)
-                    x_idx = torch.from_numpy(x_idx).to(device)
-
-                    # extraer features de píxeles
-                    crop_feat = feat[:, y_idx, x_idx]     # [D, N]
-                    crop_feat = crop_feat.transpose(0, 1) # [N, D]
-
-                    # pasar por el agregador
-                    crop_vec = self.aggregator(crop_feat)   # -> [D]
-                    crop_vecs.append(crop_vec)
-                    crop_labels.append(int(class_id))
-
-        if not crop_vecs:
-            return (torch.empty(0, D, device=device),
-                    torch.empty(0, dtype=torch.long, device=device))
-
-        crop_features = torch.stack(crop_vecs, dim=0)  # [num_crops, D]
-        crop_labels = torch.tensor(crop_labels, dtype=torch.long, device=device)
-        return crop_features, crop_labels
     
     def get_checkpoint(self, epoch: int) -> dict[str, dict | int]:
         """Create a checkpoint dictionary, containing references to the pytorch tensors.

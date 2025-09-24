@@ -345,3 +345,134 @@ class CropConLoss(torch.nn.Module):
 
     def __str__(self):
         return 'CropConLoss'
+
+
+
+
+
+def generate_same_image_mask(num_pixels, device):
+    """Generate a mask indicating if two pixels belong to the same image."""
+    image_ids = []
+    for img_id, pixel_count in enumerate(num_pixels):
+        image_ids.extend([img_id] * pixel_count)
+    image_ids = torch.tensor(image_ids, device=device).view(-1, 1)
+    same_image_mask = (image_ids == image_ids.t()).float()
+    return same_image_mask.unsqueeze(0)  # [1, N, N]
+
+
+def generate_ignore_mask(labels, ignore_labels):
+    """Mask pairs where at least one pixel has an ignore label."""
+    ignore = torch.zeros_like(labels, dtype=torch.bool)
+    for ign in ignore_labels:
+        ignore |= (labels == ign)
+
+    ignore_mask = ignore | ignore.transpose(1, 2)
+    return ignore_mask.float()
+
+
+def generate_positive_and_negative_masks(labels):
+    """Positive = same label, Negative = different label."""
+    positive_mask = (labels == labels.transpose(1, 2)).float()
+    negative_mask = 1 - positive_mask
+    return positive_mask, negative_mask
+
+
+def collapse_spatial_dimensions(x):
+    """Collapse H, W -> flatten to N pixels."""
+    B, C, H, W = x.shape
+    return x.permute(0, 2, 3, 1).reshape(B, H * W, C)
+
+
+def resize_and_project(features, resize_size, proj_head):
+    """Resize features and pass through projection head."""
+    resized = F.interpolate(features, size=resize_size, mode="bilinear", align_corners=True)
+    return proj_head(resized)
+
+
+def compute_contrastive_loss(logits, positive_mask, negative_mask, ignore_mask):
+    """Pixel-level supervised contrastive loss."""
+    validity_mask = 1 - ignore_mask
+    positive_mask = positive_mask * validity_mask
+    negative_mask = negative_mask * validity_mask
+
+    exp_logits = torch.exp(logits) * validity_mask
+    denom = exp_logits + (exp_logits * negative_mask).sum(dim=2, keepdim=True)
+
+    normalized_exp_logits = exp_logits / (denom + 1e-8)
+    neg_log_likelihood = -torch.log(normalized_exp_logits * validity_mask + ignore_mask)
+
+    # normalize per-positive
+    normalized_weight = positive_mask / (positive_mask.sum(dim=2, keepdim=True) + 1e-6)
+    neg_log_likelihood = (neg_log_likelihood * normalized_weight).sum(dim=2)
+
+    # average over valid pixels
+    valid_index = (positive_mask.sum(dim=2) > 0).float()
+    normalized_weight = valid_index / (valid_index.sum(dim=1, keepdim=True) + 1e-6)
+    neg_log_likelihood = (neg_log_likelihood * normalized_weight).sum(dim=1)
+
+    return neg_log_likelihood.mean()
+
+
+def within_image_supervised_pixel_contrastive_loss(features, labels, ignore_labels, temperature):
+    # features: [B, N, C], labels: [B, N, 1]
+    logits = torch.matmul(features, features.transpose(1, 2)) / temperature
+    positive_mask, negative_mask = generate_positive_and_negative_masks(labels)
+    ignore_mask = generate_ignore_mask(labels, ignore_labels)
+    return compute_contrastive_loss(logits, positive_mask, negative_mask, ignore_mask)
+
+
+def cross_image_supervised_pixel_contrastive_loss(features1, features2, labels1, labels2, ignore_labels, temperature):
+    # features1, features2: [B, N, C]
+    features = torch.cat([features1, features2], dim=1)
+    labels = torch.cat([labels1, labels2], dim=1)
+
+    num_pixels1 = features1.shape[1]
+    num_pixels2 = features2.shape[1]
+    same_image_mask = generate_same_image_mask([num_pixels1, num_pixels2], device=features.device)
+
+    logits = torch.matmul(features, features.transpose(1, 2)) / temperature
+    positive_mask, negative_mask = generate_positive_and_negative_masks(labels)
+    negative_mask = negative_mask * same_image_mask
+    ignore_mask = generate_ignore_mask(labels, ignore_labels)
+
+    return compute_contrastive_loss(logits, positive_mask, negative_mask, ignore_mask)
+
+
+class SupervisedPixelContrastiveLoss(torch.nn.Module):
+    """Full supervised pixel contrastive loss (within- or cross-image)."""
+
+    def __init__(self, resize_size, ignore_index=-1, temperature=0.1, within_image=False):
+        super().__init__()
+        
+        self.resize_size = resize_size//2
+        self.ignore_labels = [ignore_index]
+        self.temperature = temperature
+        self.within_image = within_image
+
+    def define_projector(self, proj_head):
+        self.proj_head = proj_head
+
+    def forward(self, features_orig, features_aug, labels_orig, labels_aug):
+        # features: [B, C, H, W], labels: [B, H, W]
+        f_orig = resize_and_project(features_orig, self.resize_size, self.proj_head)
+        f_aug = resize_and_project(features_aug, self.resize_size, self.proj_head)
+
+        l_orig = F.interpolate(labels_orig.unsqueeze(1).float(), size=self.resize_size, mode="nearest").long().squeeze(1)
+        l_aug = F.interpolate(labels_aug.unsqueeze(1).float(), size=self.resize_size, mode="nearest").long().squeeze(1)
+
+        f_orig = collapse_spatial_dimensions(f_orig)  # [B, N, C]
+        f_aug = collapse_spatial_dimensions(f_aug)    # [B, N, C]
+        l_orig = l_orig.view(l_orig.size(0), -1, 1)   # [B, N, 1]
+        l_aug = l_aug.view(l_aug.size(0), -1, 1)      # [B, N, 1]
+
+        if self.within_image:
+            loss1 = within_image_supervised_pixel_contrastive_loss(f_orig, l_orig, self.ignore_labels, self.temperature)
+            loss2 = within_image_supervised_pixel_contrastive_loss(f_aug, l_aug, self.ignore_labels, self.temperature)
+            return loss1 + loss2
+        else:
+            # shuffle batch for cross-image loss
+            idx = torch.randperm(f_aug.size(0), device=f_aug.device)
+            f_aug_shuf = f_aug[idx]
+            l_aug_shuf = l_aug[idx]
+            return cross_image_supervised_pixel_contrastive_loss(f_orig, f_aug_shuf, l_orig, l_aug_shuf,
+                                                                 self.ignore_labels, self.temperature)
