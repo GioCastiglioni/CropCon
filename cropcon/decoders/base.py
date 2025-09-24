@@ -32,8 +32,8 @@ class ProjectionHead(nn.Module):
         layers = []
         for i in range(num_layers - 1):
             layers.append(nn.Conv2d(in_channels, proj_channels, kernel_size=1))
-            layers.append(nn.BatchNorm2d(proj_channels))
-            layers.append(nn.ReLU(inplace=True))
+            layers.append(nn.GroupNorm(proj_channels//16, proj_channels))
+            layers.append(nn.ReLU(inplace=False))
             in_channels = proj_channels
         layers.append(nn.Conv2d(in_channels, proj_channels, kernel_size=1))
         self.net = nn.Sequential(*layers)
