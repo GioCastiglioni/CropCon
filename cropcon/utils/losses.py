@@ -347,9 +347,6 @@ class CropConLoss(torch.nn.Module):
         return 'CropConLoss'
 
 
-
-
-
 def generate_same_image_mask(num_pixels, device):
     """Generate a mask indicating if two pixels belong to the same image."""
     image_ids = []
