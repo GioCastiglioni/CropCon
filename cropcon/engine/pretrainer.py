@@ -174,7 +174,7 @@ class Trainer:
 
                 feat_v2 = self.model.module.forward_features(image["v2"], batch_positions=data["metadata"])
 
-                loss = self.criterion(feat_v1, feat_v2, mask["v1"], mask["v2"])
+                loss = self.compute_loss(feat_v1, feat_v2, mask["v1"], mask["v2"])
                 
             self.optimizer.zero_grad()
 
@@ -241,7 +241,7 @@ class Trainer:
 
                 feat_v2 = self.model.module.forward_features(image["v2"], batch_positions=data["metadata"])
 
-                batch_loss = self.criterion(feat_v1, feat_v2, mask["v1"], mask["v2"])
+                batch_loss = self.compute_loss(feat_v1, feat_v2, mask["v1"], mask["v2"])
 
                 if batch_idx % self.log_interval == 0: self.logger.info(f"Val batch: {batch_idx+1}/{len(self.val_loader)}")
 
@@ -370,17 +370,9 @@ class Trainer:
                 epoch, is_best=True, checkpoint=best_ckpt
             )
 
-    def compute_loss(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """Compute the loss.
-
-        Args:
-            logits (torch.Tensor): logits from the decoder.
-            target (torch.Tensor): target tensor.
-
-        Returns:
-            torch.Tensor: loss value.
-        """
-        return self.criterion(logits, target)
+    def compute_loss(self, feat_v1: torch.Tensor, feat_v2: torch.Tensor, mask1: torch.Tensor, mask2: torch.Tensor) -> torch.Tensor:
+        """Compute the loss"""
+        return self.criterion(feat_v1, feat_v2, mask1, mask2)
 
     def log(self, batch_idx: int, epoch) -> None:
         """Log the information.
