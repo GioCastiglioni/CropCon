@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from cropcon.datasets.base import GeoFMDataset, GeoFMSubset, RawGeoFMDataset
 from cropcon.decoders.base import Decoder
-from cropcon.decoders.base import ProjectionHead
+from cropcon.decoders.base import ProjectionHead, CropAggregator
 from cropcon.encoders.base import Encoder
 from cropcon.engine.evaluator import Evaluator
 from cropcon.utils.collate_fn import get_collate_fn
@@ -209,6 +209,16 @@ def main(cfg: DictConfig) -> None:
                 output_device=local_rank,
                 find_unused_parameters=False,
             )
+
+        aggregator = torch.nn.parallel.DistributedDataParallel(
+            CropAggregator(
+                cfg.projection_dim,
+                cfg.projection_dim,
+                cfg.dataset.ignore_index).to(device),
+                device_ids=[local_rank],
+                output_device=local_rank,
+                find_unused_parameters=False,
+            )
     else: 
         projector = None
 
@@ -330,7 +340,7 @@ def main(cfg: DictConfig) -> None:
         criterion = instantiate(cfg.criterion)
 
         if cfg.pretrain:
-            criterion.define_projector(projector)
+            criterion.define_projectors(projector, aggregator)
 
         params = [
             {'params': non_encoder_params(decoder.module), 'lr': cfg.optimizer.lr},]
@@ -338,6 +348,7 @@ def main(cfg: DictConfig) -> None:
             params.append({'params': decoder.module.encoder.parameters(), 'lr': cfg.optimizer.lr * cfg.ft_rate})
         if cfg.task.trainer.alpha != 0 or cfg.pretrain:
             params.append({'params': projector.parameters()})
+            params.append({'params': aggregator.parameters()})
 
         optimizer = instantiate(cfg.optimizer, params=None)
         optimizer = optimizer(params=params)
