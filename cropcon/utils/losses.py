@@ -510,44 +510,10 @@ class SupervisedPixelPrototypeLoss(torch.nn.Module):
         self.resize_size = resize_size//2
         self.ignore_labels = [ignore_index]
         self.temperature = temperature
-        self.register_buffer("prototypes", torch.zeros(num_classes, proj_channels))
 
-    def define_projector(self, proj_head):
+    def define_projector(self, proj_head, prototypes):
         self.proj_head = proj_head
-        self.prototypes = self.prototypes.to(self.proj_head.device)
-    
-    @torch.no_grad()
-    def update_prototypes(self, features, labels, momentum=0.999):
-        """
-        Actualiza los prototipos usando EMA.
-        features: [B, N, C]
-        labels: [B, N, 1]
-        """
-        B, N, C = features.shape
-        
-        # Aplanar batch y píxeles
-        features = features.reshape(B * N, C)
-        labels = labels.reshape(B * N)
-
-        with torch.no_grad():
-            # Para cada clase presente en el lote
-            for c in torch.unique(labels):
-                if c == self.ignore_labels[0]: # Ignorar etiqueta
-                    continue
-                
-                # Obtener características de la clase c
-                class_features = features[labels == c]
-                
-                # Calcular la media de las características para esta clase en este lote
-                if class_features.numel() > 0:
-                    # Normalizar para que la magnitud sea consistente
-                    mean_class_feature = F.normalize(class_features.mean(dim=0), dim=0)
-                    
-                    # Actualización EMA
-                    self.prototypes[c] = momentum * self.prototypes[c] + (1 - momentum) * mean_class_feature
-                    
-                    # Opcional: Volver a normalizar el prototipo después de la actualización
-                    self.prototypes[c] = F.normalize(self.prototypes[c], dim=0)
+        self.prototypes = prototypes
 
     def forward(self, features_orig, features_aug, labels_orig, labels_aug):
         # features: [B, C, H, W], labels: [B, H, W]
@@ -565,12 +531,7 @@ class SupervisedPixelPrototypeLoss(torch.nn.Module):
         l_orig = l_orig.view(l_orig.size(0), -1, 1)   # [B, N, 1]
         l_aug = l_aug.view(l_aug.size(0), -1, 1)      # [B, N, 1]
 
-        prots_for_loss = self.prototypes.clone().detach()
-
-        loss1 = pixel_to_prototype_contrastive_loss(f_orig, l_orig, prots_for_loss, self.temperature, self.ignore_labels)
-        loss2 = pixel_to_prototype_contrastive_loss(f_aug, l_aug, prots_for_loss, self.temperature, self.ignore_labels)
-
-        self.update_prototypes(f_orig, l_orig)
-        self.update_prototypes(f_aug, l_aug)
+        loss1 = pixel_to_prototype_contrastive_loss(f_orig, l_orig, self.prototypes, self.temperature, self.ignore_labels)
+        loss2 = pixel_to_prototype_contrastive_loss(f_aug, l_aug, self.prototypes, self.temperature, self.ignore_labels)
 
         return loss1 + loss2

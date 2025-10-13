@@ -192,6 +192,8 @@ def main(cfg: DictConfig) -> None:
             cfg.decoder,
             encoder=encoder,
         )
+    decoder.prototypes = torch.nn.Parameter(torch.randn((cfg.dataset.num_classes, cfg.projection_dim)))
+    torch.nn.init.kaiming_normal_(decoder.prototypes.data)
     decoder.to(device)
     decoder = torch.nn.parallel.DistributedDataParallel(
             decoder,
@@ -340,7 +342,7 @@ def main(cfg: DictConfig) -> None:
         criterion = instantiate(cfg.criterion)
 
         if cfg.pretrain:
-            criterion.define_projector(projector)
+            criterion.define_projector(projector, decoder.module.prototypes)
 
         params = [
             {'params': non_encoder_params(decoder.module), 'lr': cfg.optimizer.lr},]
