@@ -155,6 +155,7 @@ class Trainer:
             epoch (int): number of the epoch.
         """
         self.model.train()
+        self.criterion.train()
 
         end_time = time.time()
         for batch_idx, data in enumerate(self.train_loader):
@@ -222,6 +223,7 @@ class Trainer:
             epoch (int): number of the epoch.
         """
         self.model.eval()
+        self.criterion.eval()
 
         end_time = time.time()
         loss = 0

@@ -380,12 +380,6 @@ def collapse_spatial_dimensions(x):
     return x.permute(0, 2, 3, 1).reshape(B, H * W, C)
 
 
-def resize_and_project(features, resize_size, proj_head):
-    """Resize features and pass through projection head."""
-    resized = F.interpolate(features, size=resize_size, mode="bilinear", align_corners=True)
-    return proj_head(resized)
-
-
 def compute_contrastive_loss(logits, positive_mask, negative_mask, ignore_mask):
     """Pixel-level supervised contrastive loss."""
     validity_mask = 1 - ignore_mask
@@ -449,13 +443,18 @@ class SupervisedPixelContrastiveLoss(torch.nn.Module):
     def define_projector(self, proj_head):
         self.proj_head = proj_head
 
-    def forward(self, features_orig, features_aug, labels_orig, labels_aug):
+    def forward(self, features_orig, features_aug, labels_orig, labels_aug, prototypes):
         # features: [B, C, H, W], labels: [B, H, W]
-        f_orig = resize_and_project(features_orig, self.resize_size, self.proj_head)
-        f_aug = resize_and_project(features_aug, self.resize_size, self.proj_head)
+        f_orig = F.interpolate(features_orig, size=self.resize_size, mode="bilinear", align_corners=True) 
+        f_aug = F.interpolate(features_aug, size=self.resize_size, mode="bilinear", align_corners=True) 
+
+        B,C,H,W = f_orig.shape
 
         l_orig = F.interpolate(labels_orig.unsqueeze(1).float(), size=self.resize_size, mode="nearest").long().squeeze(1)
         l_aug = F.interpolate(labels_aug.unsqueeze(1).float(), size=self.resize_size, mode="nearest").long().squeeze(1)
+
+        f_orig = self.proj_head(F.normalize(prototypes.index_select(0, l_orig.view(-1)).view(B, H, W, C).permute(0, 3, 1, 2), dim=1), f_orig)
+        f_aug = self.proj_head(F.normalize(prototypes.index_select(0, l_aug.view(-1)).view(B, H, W, C).permute(0, 3, 1, 2), dim=1), f_aug)
 
         f_orig = collapse_spatial_dimensions(f_orig)  # [B, N, C]
         f_aug = collapse_spatial_dimensions(f_aug)    # [B, N, C]
@@ -473,3 +472,105 @@ class SupervisedPixelContrastiveLoss(torch.nn.Module):
             l_aug_shuf = l_aug[idx]
             return cross_image_supervised_pixel_contrastive_loss(f_orig, f_aug_shuf, l_orig, l_aug_shuf,
                                                                  self.ignore_labels, self.temperature)
+
+
+def pixel_to_prototype_contrastive_loss(features, labels, prototypes, temperature, ignore_labels):
+    """
+    features: [B, N, C]
+    labels: [B, N, 1]
+    prototypes: [num_classes, C]
+    """
+    B, N, C = features.shape
+    
+    # Aplanar y normalizar características
+    features = features.reshape(B * N, C)
+    labels = labels.reshape(B * N)
+    features = F.normalize(features, dim=1)
+    
+    # Calcular similitud entre cada píxel y cada prototipo
+    # El prototipo ya debería estar normalizado
+    logits = torch.matmul(features, prototypes.t()) / temperature  # [B*N, num_classes]
+    
+    # Crear máscara de etiquetas a ignorar
+    valid_mask = (labels.unsqueeze(1) != torch.tensor(ignore_labels, device=labels.device)).all(1)
+    
+    # La pérdida es simplemente una CrossEntropyLoss sobre las similitudes
+    # El "target" para cada píxel es el índice de su clase correcta
+    loss = F.cross_entropy(logits[valid_mask], labels[valid_mask])
+    
+    return loss
+
+
+class SupervisedPixelPrototypeLoss(torch.nn.Module):
+    """Full supervised pixel contrastive loss (within- or cross-image)."""
+
+    def __init__(self, resize_size, ignore_index=-1, temperature=0.1, num_classes=20, proj_channels=256):
+        super().__init__()
+        
+        self.resize_size = resize_size//2
+        self.ignore_labels = [ignore_index]
+        self.temperature = temperature
+        self.register_buffer("prototypes", torch.zeros(num_classes, proj_channels))
+
+    def define_projector(self, proj_head):
+        self.proj_head = proj_head
+        self.prototypes = self.prototypes.to(self.proj_head.device)
+    
+    @torch.no_grad()
+    def update_prototypes(self, features, labels, momentum=0.999):
+        """
+        Actualiza los prototipos usando EMA.
+        features: [B, N, C]
+        labels: [B, N, 1]
+        """
+        B, N, C = features.shape
+        
+        # Aplanar batch y píxeles
+        features = features.reshape(B * N, C)
+        labels = labels.reshape(B * N)
+
+        with torch.no_grad():
+            # Para cada clase presente en el lote
+            for c in torch.unique(labels):
+                if c == self.ignore_labels[0]: # Ignorar etiqueta
+                    continue
+                
+                # Obtener características de la clase c
+                class_features = features[labels == c]
+                
+                # Calcular la media de las características para esta clase en este lote
+                if class_features.numel() > 0:
+                    # Normalizar para que la magnitud sea consistente
+                    mean_class_feature = F.normalize(class_features.mean(dim=0), dim=0)
+                    
+                    # Actualización EMA
+                    self.prototypes[c] = momentum * self.prototypes[c] + (1 - momentum) * mean_class_feature
+                    
+                    # Opcional: Volver a normalizar el prototipo después de la actualización
+                    self.prototypes[c] = F.normalize(self.prototypes[c], dim=0)
+
+    def forward(self, features_orig, features_aug, labels_orig, labels_aug):
+        # features: [B, C, H, W], labels: [B, H, W]
+        f_orig = F.interpolate(features_orig, size=self.resize_size, mode="bilinear", align_corners=True) 
+        f_aug = F.interpolate(features_aug, size=self.resize_size, mode="bilinear", align_corners=True) 
+
+        l_orig = F.interpolate(labels_orig.unsqueeze(1).float(), size=self.resize_size, mode="nearest").long().squeeze(1)
+        l_aug = F.interpolate(labels_aug.unsqueeze(1).float(), size=self.resize_size, mode="nearest").long().squeeze(1)
+
+        f_orig = self.proj_head(f_orig)
+        f_aug = self.proj_head(f_aug)
+
+        f_orig = collapse_spatial_dimensions(f_orig)  # [B, N, C]
+        f_aug = collapse_spatial_dimensions(f_aug)    # [B, N, C]
+        l_orig = l_orig.view(l_orig.size(0), -1, 1)   # [B, N, 1]
+        l_aug = l_aug.view(l_aug.size(0), -1, 1)      # [B, N, 1]
+
+        prots_for_loss = self.prototypes.clone().detach()
+
+        loss1 = pixel_to_prototype_contrastive_loss(f_orig, l_orig, prots_for_loss, self.temperature, self.ignore_labels)
+        loss2 = pixel_to_prototype_contrastive_loss(f_aug, l_aug, prots_for_loss, self.temperature, self.ignore_labels)
+
+        self.update_prototypes(f_orig, l_orig)
+        self.update_prototypes(f_aug, l_aug)
+
+        return loss1 + loss2

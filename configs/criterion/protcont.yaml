@@ -1,0 +1,6 @@
+_target_: cropcon.utils.losses.SupervisedPixelPrototypeLoss
+resize_size: ${dataset.img_size}
+ignore_index: ${dataset.ignore_index}
+temperature: ${task.trainer.tau}
+num_classes: ${dataset.num_classes}
+proj_channels: ${projection_dim}

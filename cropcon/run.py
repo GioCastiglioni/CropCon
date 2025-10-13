@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from cropcon.datasets.base import GeoFMDataset, GeoFMSubset, RawGeoFMDataset
 from cropcon.decoders.base import Decoder
-from cropcon.decoders.base import ProjectionHead
+from cropcon.decoders.base import ProjectionHead, PrototypeAttentionProjector
 from cropcon.encoders.base import Encoder
 from cropcon.engine.evaluator import Evaluator
 from cropcon.utils.collate_fn import get_collate_fn
@@ -209,6 +209,16 @@ def main(cfg: DictConfig) -> None:
                 output_device=local_rank,
                 find_unused_parameters=False,
             )
+        #projector = torch.nn.parallel.DistributedDataParallel(
+        #    PrototypeAttentionProjector(
+        #        decoder.module.out_conv.in_channels, 
+        #        proj_channels=cfg.projection_dim, 
+        #       num_heads=4).to(device),
+        #        device_ids=[local_rank],
+        #        output_device=local_rank,
+        #        find_unused_parameters=False,
+        #    )
+        
     else: 
         projector = None
 
@@ -337,7 +347,7 @@ def main(cfg: DictConfig) -> None:
         if cfg.finetune:
             params.append({'params': decoder.module.encoder.parameters(), 'lr': cfg.optimizer.lr * cfg.ft_rate})
         if cfg.task.trainer.alpha != 0 or cfg.pretrain:
-            params.append({'params': projector.parameters()})
+            params.append({'params': criterion.proj_head.parameters()})
 
         optimizer = instantiate(cfg.optimizer, params=None)
         optimizer = optimizer(params=params)
