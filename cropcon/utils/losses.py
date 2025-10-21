@@ -1,5 +1,7 @@
 import torch
 from torch.nn import functional as F
+import torch.nn as nn
+from typing import List, Tuple
 
 
 class WeightedCrossEntropy(torch.nn.Module):
@@ -346,130 +348,364 @@ class CropConLoss(torch.nn.Module):
     def __str__(self):
         return 'CropConLoss'
 
+def generate_same_image_mask(num_pixels_per_image: list[int], 
+                             device: torch.device) -> torch.Tensor:
+    """
+    Genera una máscara que indica si dos píxeles pertenecen a la misma imagen.
+    
+    Args:
+        num_pixels_per_image (List[int]): Lista con el número de píxeles
+                                          en cada imagen del lote.
+        device (torch.device): Dispositivo donde crear el tensor.
 
-def generate_same_image_mask(num_pixels, device):
-    """Generate a mask indicating if two pixels belong to the same image."""
+    Returns:
+        torch.Tensor: Tensor de shape [1, num_total_pixels, num_total_pixels]
+    """
     image_ids = []
-    for img_id, pixel_count in enumerate(num_pixels):
+    num_total_pixels = 0
+    for img_id, pixel_count in enumerate(num_pixels_per_image):
         image_ids.extend([img_id] * pixel_count)
-    image_ids = torch.tensor(image_ids, device=device).view(-1, 1)
-    same_image_mask = (image_ids == image_ids.t()).float()
-    return same_image_mask.unsqueeze(0)  # [1, N, N]
+        num_total_pixels += pixel_count
+
+    image_ids_tensor = torch.tensor(
+        image_ids, dtype=torch.long, device=device
+    ).view(num_total_pixels, 1)
+    
+    # Compara [N, 1] con [1, N] para obtener [N, N]
+    same_image_mask = (image_ids_tensor == image_ids_tensor.t()).float()
+    
+    # Añade dimensión de lote: [1, N, N]
+    return same_image_mask.unsqueeze(0)
 
 
-def generate_ignore_mask(labels, ignore_labels):
-    """Mask pairs where at least one pixel has an ignore label."""
-    ignore = torch.zeros_like(labels, dtype=torch.bool)
-    for ign in ignore_labels:
-        ignore |= (labels == ign)
+def generate_ignore_mask(labels: torch.Tensor, 
+                         ignore_labels: list[int]) -> torch.Tensor:
+    """
+    Genera máscara de ignorados (píxeles inválidos).
+    
+    Args:
+        labels (torch.Tensor): Tensor de shape [B, N, 1] (píxeles aplanados).
+        ignore_labels (List[int]): Lista de IDs de clase a ignorar.
 
-    ignore_mask = ignore | ignore.transpose(1, 2)
-    return ignore_mask.float()
+    Returns:
+        torch.Tensor: Tensor de shape [B, N, N]
+    """
+    # [B, N, 1]
+    ignore_labels_tensor = torch.tensor(
+        ignore_labels, dtype=labels.dtype, device=labels.device
+    )
+    
+    # Compara [B, N, 1] con [len(ignore_labels)] -> [B, N, len(ignore_labels)]
+    ignore_mask_per_pixel = (
+        labels == ignore_labels_tensor.view(1, 1, -1)
+    ).any(dim=2, keepdim=True) # [B, N, 1]
+
+    # Un par (i, j) se ignora si *alguno* de los píxeles es inválido.
+    # [B, N, 1] | [B, 1, N] -> [B, N, N]
+    ignore_mask_matrix = (ignore_mask_per_pixel | 
+                          ignore_mask_per_pixel.transpose(1, 2)).float()
+    return ignore_mask_matrix
 
 
-def generate_positive_and_negative_masks(labels):
-    """Positive = same label, Negative = different label."""
+def generate_positive_and_negative_masks(
+    labels: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Genera máscaras positiva (misma clase) y negativa (distinta clase).
+    
+    Args:
+        labels (torch.Tensor): Tensor de shape [B, N, 1] (píxeles aplanados).
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]: positive_mask, negative_mask
+                                           ambos de shape [B, N, N].
+    """
+    # Compara [B, N, 1] con [B, 1, N] -> [B, N, N]
     positive_mask = (labels == labels.transpose(1, 2)).float()
-    negative_mask = 1 - positive_mask
+    negative_mask = 1.0 - positive_mask
     return positive_mask, negative_mask
 
+# --- 3. Funciones de Aplanamiento y Cálculo de Loss ---
 
-def collapse_spatial_dimensions(x):
-    """Collapse H, W -> flatten to N pixels."""
-    B, C, H, W = x.shape
-    return x.permute(0, 2, 3, 1).reshape(B, H * W, C)
+def collapse_spatial_dimensions(tensor_in: torch.Tensor) -> torch.Tensor:
+    """
+    Colapsa las dimensiones espaciales (H, W) en una sola (N).
+    
+    Args:
+        tensor_in (torch.Tensor): Tensor de shape [B, C, H, W]
+    
+    Returns:
+        torch.Tensor: Tensor de shape [B, N, C] donde N = H * W
+    """
+    b, c, h, w = tensor_in.shape
+    # .view() -> [B, C, N]
+    # .permute() -> [B, N, C]
+    return tensor_in.view(b, c, -1).permute(0, 2, 1)
 
 
-def resize_and_project(features, resize_size, proj_head):
-    """Resize features and pass through projection head."""
-    resized = F.interpolate(features, size=resize_size, mode="bilinear", align_corners=True)
-    return proj_head(resized)
+def compute_contrastive_loss(
+    logits: torch.Tensor,
+    positive_mask: torch.Tensor,
+    negative_mask: torch.Tensor,
+    ignore_mask: torch.Tensor,
+    epsilon: float = 1e-6
+) -> torch.Tensor:
+    """
+    Cálculo de la pérdida contrastiva (InfoNCE modificada).
+    
+    Args:
+        logits (torch.Tensor): Similitudes [B, N, N]
+        positive_mask (torch.Tensor): Máscara de pares positivos [B, N, N]
+        negative_mask (torch.Tensor): Máscara de pares negativos [B, N, N]
+        ignore_mask (torch.Tensor): Máscara de pares a ignorar [B, N, N]
+        epsilon (float): Pequeño valor para estabilidad numérica.
 
-
-def compute_contrastive_loss(logits, positive_mask, negative_mask, ignore_mask):
-    """Pixel-level supervised contrastive loss."""
-    validity_mask = 1 - ignore_mask
+    Returns:
+        torch.Tensor: Valor escalar de la pérdida.
+    """
+    validity_mask = 1.0 - ignore_mask
     positive_mask = positive_mask * validity_mask
     negative_mask = negative_mask * validity_mask
 
+    # Numerador y denominador de la loss
     exp_logits = torch.exp(logits) * validity_mask
-    denom = exp_logits + (exp_logits * negative_mask).sum(dim=2, keepdim=True)
 
-    normalized_exp_logits = exp_logits / (denom + 1e-8)
-    neg_log_likelihood = -torch.log(normalized_exp_logits * validity_mask + ignore_mask)
+    # Denominador: exp(i) + sum(exp(j) para j en Negativos)
+    denominator = exp_logits + torch.sum(
+        exp_logits * negative_mask, dim=2, keepdim=True
+    )
+    
+    # Probabilidad: exp(i) / (exp(i) + sum(negativos))
+    # Usamos clamp() para evitar divisiones por cero (equiv a divide_no_nan)
+    normalized_exp_logits = exp_logits / torch.clamp(denominator, min=epsilon)
+    
+    # -log(Probabilidad)
+    # El truco (normalized_exp_logits * validity_mask + ignore_mask)
+    # asegura que los píxeles ignorados tengan log(1) = 0
+    neg_log_likelihood = -torch.log(
+        normalized_exp_logits * validity_mask + ignore_mask + epsilon
+    )
 
-    # normalize per-positive
-    normalized_weight = positive_mask / (positive_mask.sum(dim=2, keepdim=True) + 1e-6)
-    neg_log_likelihood = (neg_log_likelihood * normalized_weight).sum(dim=2)
+    # Normalizar por el número de positivos en la fila (dim 2)
+    pos_sum_2 = torch.sum(positive_mask, dim=2, keepdim=True)
+    normalized_weight_2 = positive_mask / torch.clamp(pos_sum_2, min=epsilon)
+    
+    neg_log_likelihood_sum_2 = torch.sum(
+        neg_log_likelihood * normalized_weight_2, dim=2
+    ) # [B, N]
 
-    # average over valid pixels
-    valid_index = (positive_mask.sum(dim=2) > 0).float()
-    normalized_weight = valid_index / (valid_index.sum(dim=1, keepdim=True) + 1e-6)
-    neg_log_likelihood = (neg_log_likelihood * normalized_weight).sum(dim=1)
+    # Normalizar por el número de píxeles válidos (con al menos 1 positivo)
+    # en el lote (dim 1)
+    positive_mask_sum_1 = torch.sum(positive_mask, dim=2) # [B, N]
+    valid_index = (positive_mask_sum_1 > 0).float() # [B, N]
+    
+    valid_index_sum_1 = torch.sum(valid_index, dim=1, keepdim=True) # [B, 1]
+    normalized_weight_1 = valid_index / torch.clamp(valid_index_sum_1, min=epsilon)
 
-    return neg_log_likelihood.mean()
+    neg_log_likelihood_sum_1 = torch.sum(
+        neg_log_likelihood_sum_2 * normalized_weight_1, dim=1
+    ) # [B]
 
+    loss = torch.mean(neg_log_likelihood_sum_1)
+    return loss
 
-def within_image_supervised_pixel_contrastive_loss(features, labels, ignore_labels, temperature):
-    # features: [B, N, C], labels: [B, N, 1]
+# --- 4. Funciones de Pérdida Principales ---
+
+def within_image_supervised_pixel_contrastive_loss(
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    ignore_labels: list[int],
+    temperature: float
+) -> torch.Tensor:
+    """
+    Calcula la pérdida contrastiva SÓLO con píxeles de la misma imagen.
+    
+    Args:
+        features (torch.Tensor): [B, N, C]
+        labels (torch.Tensor): [B, N, 1]
+        ignore_labels (List[int]): Clases a ignorar.
+        temperature (float): Temperatura de la softmax.
+
+    Returns:
+        torch.Tensor: Pérdida escalar.
+    """
+    # Similitud entre todos los píxeles: [B, N, C] @ [B, C, N] -> [B, N, N]
     logits = torch.matmul(features, features.transpose(1, 2)) / temperature
+    
     positive_mask, negative_mask = generate_positive_and_negative_masks(labels)
     ignore_mask = generate_ignore_mask(labels, ignore_labels)
-    return compute_contrastive_loss(logits, positive_mask, negative_mask, ignore_mask)
+
+    return compute_contrastive_loss(
+        logits, positive_mask, negative_mask, ignore_mask
+    )
 
 
-def cross_image_supervised_pixel_contrastive_loss(features1, features2, labels1, labels2, ignore_labels, temperature):
-    # features1, features2: [B, N, C]
+def cross_image_supervised_pixel_contrastive_loss(
+    features1: torch.Tensor,
+    features2: torch.Tensor,
+    labels1: torch.Tensor,
+    labels2: torch.Tensor,
+    ignore_labels: list[int],
+    temperature: float
+) -> torch.Tensor:
+    """
+    Calcula la pérdida contrastiva entre dos conjuntos de características/etiquetas
+    (ej. original vs aumentada).
+    
+    Args:
+        features1 (torch.Tensor): [B, N1, C]
+        features2 (torch.Tensor): [B, N2, C]
+        labels1 (torch.Tensor): [B, N1, 1]
+        labels2 (torch.Tensor): [B, N2, 1]
+        ignore_labels (List[int]): Clases a ignorar.
+        temperature (float): Temperatura de la softmax.
+
+    Returns:
+        torch.Tensor: Pérdida escalar.
+    """
+    # N1 y N2 pueden ser diferentes si las imágenes originales y aumentadas
+    # se redimensionan a tamaños distintos (aunque aquí N1=N2)
+    batch_size, num_pixels1, _ = features1.shape
+    _, num_pixels2, _ = features2.shape
+
+    # Concatena a lo largo de la dimensión de píxeles
+    # [B, N1+N2, C]
     features = torch.cat([features1, features2], dim=1)
+    # [B, N1+N2, 1]
     labels = torch.cat([labels1, labels2], dim=1)
 
-    num_pixels1 = features1.shape[1]
-    num_pixels2 = features2.shape[1]
-    same_image_mask = generate_same_image_mask([num_pixels1, num_pixels2], device=features.device)
+    num_pixels_list = [num_pixels1, num_pixels2]
+    
+    same_image_mask = generate_same_image_mask(
+        num_pixels_list, device=features.device
+    ) # [1, N1+N2, N1+N2]
 
+    # Similitud [B, N1+N2, N1+N2]
     logits = torch.matmul(features, features.transpose(1, 2)) / temperature
+    
     positive_mask, negative_mask = generate_positive_and_negative_masks(labels)
+    # Filtra negativos: solo negativos de *diferentes* bloques
     negative_mask = negative_mask * same_image_mask
+    
     ignore_mask = generate_ignore_mask(labels, ignore_labels)
 
-    return compute_contrastive_loss(logits, positive_mask, negative_mask, ignore_mask)
+    return compute_contrastive_loss(
+        logits, positive_mask, negative_mask, ignore_mask
+    )
+
 
 
 class SupervisedPixelContrastiveLoss(torch.nn.Module):
-    """Full supervised pixel contrastive loss (within- or cross-image)."""
+    """
+    Una implementación fiel en PyTorch de la Pixel-Wise Supervised Contrastive Loss
+    del paper de Zhao et al. (2021) "Contrastive Learning for Label-Efficient
+    Semantic Segmentation".
 
-    def __init__(self, resize_size, ignore_index=-1, temperature=0.1, within_image=False):
+    Esta clase implementa tanto la variante "within-image" como la "cross-image".
+    """
+
+    def __init__(self, resize_size=128, temperature=0.1, ignore_index=-1, within_image=False):
+        """
+        Args:
+            temperature (float): El parámetro de temperatura τ para escalar los logits.
+            ignore_index (int): El valor en las etiquetas que debe ser ignorado durante el cálculo.
+            loss_type (str): El tipo de pérdida a calcular. Opciones: 'within-image' o 'cross-image'.
+        """
         super().__init__()
-        
-        self.resize_size = resize_size//2
-        self.ignore_labels = [ignore_index]
         self.temperature = temperature
-        self.within_image = within_image
+        self.ignore_labels = [ignore_index]
+        self.within_image_loss = within_image
+        self.resize_size = resize_size//2
 
     def define_projector(self, proj_head):
-        self.proj_head = proj_head
+        self.proj_head=proj_head
 
-    def forward(self, features_orig, features_aug, labels_orig, labels_aug):
-        # features: [B, C, H, W], labels: [B, H, W]
-        f_orig = resize_and_project(features_orig, self.resize_size, self.proj_head)
-        f_aug = resize_and_project(features_aug, self.resize_size, self.proj_head)
+    def forward(
+        self, 
+        features_orig: torch.Tensor,
+        features_aug: torch.Tensor,
+        labels_orig: torch.Tensor,
+        labels_aug: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Calcula la pérdida contrastiva supervisada a nivel de píxel.
+        
+        Args:
+            features_orig (torch.Tensor): [B, C_in, H_in, W_in]
+            features_aug (torch.Tensor): [B, C_in, H_in, W_in]
+            labels_orig (torch.Tensor): [B, 1, H_in, W_in] (tipo Long o Int)
+            labels_aug (torch.Tensor): [B, 1, H_in, W_in] (tipo Long o Int)
 
-        l_orig = F.interpolate(labels_orig.unsqueeze(1).float(), size=self.resize_size, mode="nearest").long().squeeze(1)
-        l_aug = F.interpolate(labels_aug.unsqueeze(1).float(), size=self.resize_size, mode="nearest").long().squeeze(1)
+        Returns:
+            torch.Tensor: Pérdida escalar.
+        """
+        
+        in_channels = features_orig.shape[1]
+        device = features_orig.device
+        
+        # Redimensiona [B, C_in, H_in, W_in] -> [B, C_in, H_out, W_out]
+        features_orig_resized = F.interpolate(
+            features_orig, size=self.resize_size, mode='bilinear', align_corners=True
+        )
+        # Proyecta [B, C_in, H_out, W_out] -> [B, C_proj, H_out, W_out]
+        features_orig_proj = self.proj_head(features_orig_resized)
+        
+        features_aug_resized = F.interpolate(
+            features_aug, size=self.resize_size, mode='bilinear', align_corners=True
+        )
+        features_aug_proj = self.proj_head(features_aug_resized)
 
-        f_orig = collapse_spatial_dimensions(f_orig)  # [B, N, C]
-        f_aug = collapse_spatial_dimensions(f_aug)    # [B, N, C]
-        l_orig = l_orig.view(l_orig.size(0), -1, 1)   # [B, N, 1]
-        l_aug = l_aug.view(l_aug.size(0), -1, 1)      # [B, N, 1]
+        # 3. Redimensionar Etiquetas
+        # [B, 1, H_in, W_in] -> [B, 1, H_out, W_out]
+        labels_orig_resized = F.interpolate(
+            labels_orig.float(), size=self.resize_size, mode='nearest'
+        ).long()
+        
+        labels_aug_resized = F.interpolate(
+            labels_aug.float(), size=self.resize_size, mode='nearest'
+        ).long()
 
-        if self.within_image:
-            loss1 = within_image_supervised_pixel_contrastive_loss(f_orig, l_orig, self.ignore_labels, self.temperature)
-            loss2 = within_image_supervised_pixel_contrastive_loss(f_aug, l_aug, self.ignore_labels, self.temperature)
-            return loss1 + loss2
-        else:
-            # shuffle batch for cross-image loss
-            idx = torch.randperm(f_aug.size(0), device=f_aug.device)
-            f_aug_shuf = f_aug[idx]
-            l_aug_shuf = l_aug[idx]
-            return cross_image_supervised_pixel_contrastive_loss(f_orig, f_aug_shuf, l_orig, l_aug_shuf,
-                                                                 self.ignore_labels, self.temperature)
+        # 4. Colapsar dimensiones espaciales
+        # [B, C_proj, H, W] -> [B, N, C_proj]
+        features_orig_flat = collapse_spatial_dimensions(features_orig_proj)
+        features_aug_flat = collapse_spatial_dimensions(features_aug_proj)
+        
+        # [B, 1, H, W] -> [B, N, 1]
+        labels_orig_flat = collapse_spatial_dimensions(labels_orig_resized)
+        labels_aug_flat = collapse_spatial_dimensions(labels_aug_resized)
+
+        # 5. Calcular Pérdida
+        
+        if self.within_image_loss:
+            loss_orig = within_image_supervised_pixel_contrastive_loss(
+                features=features_orig_flat, 
+                labels=labels_orig_flat,
+                ignore_labels=self.ignore_labels, 
+                temperature=self.temperature
+            )
+            loss_aug = within_image_supervised_pixel_contrastive_loss(
+                features=features_aug_flat, 
+                labels=labels_aug_flat,
+                ignore_labels=self.ignore_labels, 
+                temperature=self.temperature
+            )
+            return loss_orig + loss_aug
+
+        # Lógica de Cross-Image
+        batch_size = features_orig_flat.shape[0]
+        
+        # Barajar índices del lote (equiv. a tf.random.shuffle)
+        shuffled_indices = torch.randperm(batch_size, device=device)
+        
+        # (equiv. a tf.gather)
+        shuffled_features_aug = features_aug_flat[shuffled_indices]
+        shuffled_labels_aug = labels_aug_flat[shuffled_indices]
+        
+        return cross_image_supervised_pixel_contrastive_loss(
+            features1=features_orig_flat,
+            features2=shuffled_features_aug,
+            labels1=labels_orig_flat,
+            labels2=shuffled_labels_aug,
+            ignore_labels=self.ignore_labels,
+            temperature=self.temperature
+        )
