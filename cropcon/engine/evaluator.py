@@ -8,6 +8,76 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+
+def normalize_for_vis(img_np):
+    """
+    Normalizes a satellite image (H, W, 3) numpy array for visualization
+    by clipping to the 2nd and 98th percentiles.
+    """
+    p2 = np.percentile(img_np, 2)
+    p98 = np.percentile(img_np, 98)
+    img_norm = np.clip(img_np, p2, p98)
+    # Scale to 0-255
+    img_norm = (img_norm - p2) / (p98 - p2 + 1e-6)
+    img_norm = (img_norm * 255).astype(np.uint8)
+    return img_norm
+
+def map_labels_to_colors(label_map, color_map, ignore_index=-1):
+    """
+    Maps a (H, W) numpy array of class labels to a (H, W, 3) RGB image.
+    Pixels with the ignore_index are mapped to black.
+    """
+    # Create an RGB image, default to black
+    rgb_image = np.zeros((label_map.shape[0], label_map.shape[1], 3), dtype=np.uint8)
+    
+    # Find valid (non-ignored) pixels
+    valid_mask = (label_map != ignore_index)
+    
+    # Get the labels for valid pixels
+    valid_labels = label_map[valid_mask]
+    
+    # Ensure valid_labels are within the color_map range
+    valid_labels = np.clip(valid_labels, 0, len(color_map) - 1)
+    
+    # Map valid labels to colors
+    rgb_image[valid_mask] = color_map[valid_labels]
+    
+    return rgb_image
+
+def save_confusion_matrix(confusion_matrix, class_labels, save_path, title=''):
+    """
+    Calculates the row-normalized confusion matrix and saves it as a PNG file.
+    """
+    # Normalize the confusion matrix (rows sum to 1)
+    # Add 1e-6 to avoid division by zero for classes with no samples
+    cm_normalized = confusion_matrix.astype('float') / (confusion_matrix.sum(axis=1)[:, np.newaxis] + 1e-6)
+    
+    plt.figure(figsize=(14, 12))  # Increased size for better label readability
+    plt.imshow(cm_normalized, cmap=plt.cm.Blues, vmin=0, vmax=1)
+
+    thresh = cm_normalized.max() / 1.7
+    for i in range(cm_normalized.shape[0]):
+        for j in range(cm_normalized.shape[1]):
+            plt.text(j, i, f'{cm_normalized[i, j]:.2f}',  
+                     horizontalalignment="center",
+                     fontsize=9,
+                     color="white" if cm_normalized[i, j] > thresh else "black")
+            
+    plt.xticks(range(len(class_labels)), class_labels, rotation=45, ha="right", fontsize=10)
+    plt.yticks(range(len(class_labels)), class_labels, fontsize=10)
+    
+    plt.xlabel("Predicted label", fontsize=12)
+    plt.ylabel("True label", fontsize=12)
+    plt.title(title, fontsize=14, fontweight='bold')
+    plt.colorbar()
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)  # Save with high resolution
+    plt.close()  # Close the figure to free up memory
+
 
 class Evaluator:
     """
@@ -59,6 +129,35 @@ class Evaluator:
         self.dataset_name = dataset_name
 
         self.use_wandb = use_wandb
+
+        self.class_colors = np.array([
+            [0, 0, 0],         # Background
+            [0, 128, 0],       # Meadow
+            [255, 255, 0],     # Soft Winter Wheat
+            [255, 165, 0],     # Corn
+            [173, 216, 230],   # Winter Barley
+            [255, 0, 255],     # Winter Rapeseed
+            [0, 255, 0],       # Spring Barley
+            [255, 140, 0],     # Sunflower
+            [128, 0, 128],     # Grapevine
+            [255, 0, 0],       # Beet
+            [192, 192, 192],   # Winter Triticale
+            [0, 255, 255],     # Winter Durum Wheat
+            [255, 20, 147],    # Fruits/Vegetables/Flowers
+            [0, 100, 0],       # Potatoes
+            [138, 43, 226],   # Leguminous Fodder
+            [160, 82, 45],     # Soybeans
+            [255, 222, 173],   # Orchard
+            [0, 0, 139],       # Mixed Cereal
+            [255, 105, 180],   # Sorghum
+        ], dtype=np.uint8)
+
+        self.class_labels = [
+            "Background", "Meadow", "Soft Winter Wheat", "Corn", "Winter Barley",
+            "Winter Rapeseed", "Spring Barley", "Sunflower", "Grapevine", "Beet",
+            "Winter Triticale", "Winter Durum Wheat", "Fruits/Vegs./Flowers",
+            "Potatoes", "Leguminous Fodder", "Soybeans", "Orchard", "Mixed Cereal", "Sorghum"
+        ]
 
         priors = torch.tensor(distribution, dtype=torch.float32)
         self.log_priors = torch.log(priors).to(self.device)
@@ -140,31 +239,115 @@ class SegEvaluator(Evaluator):
         confusion_matrix = torch.zeros(
             (self.num_classes, self.num_classes), device=self.device
         )
+        
+        # --- NEW: Create directory for visual outputs ---
+        vis_save_dir = None
+        if self.exp_dir is not None:
+            vis_save_dir = os.path.join(self.exp_dir, f"{model_name}_visuals")
+            os.makedirs(vis_save_dir, exist_ok=True)
+        # --------------------------------------------------
 
         for batch_idx, data in enumerate(tqdm(self.val_loader, desc=tag)):
             image, target = data["image"], data["target"]
-            image = {"v1": image["optical"].to(self.device)}
+            image_tensor = image["optical"].to(self.device) # Full image tensor
             target = target.to(self.device)
-            logits = model(image["v1"], batch_positions=data["metadata"], return_feats=False)
+            
+            # --- NEW: Keep a copy of original target for visualization ---
+            original_target = target.clone()
+            # -------------------------------------------------------------
+            
+            logits = model(image_tensor, batch_positions=data["metadata"], return_feats=False)
             
             if logit_compensation: logits += self.log_priors.view(1, -1, 1, 1)
+            
             if logits.shape[1] == 1:
                 pred = (torch.sigmoid(logits) > 0.5).type(torch.int64).squeeze(dim=1)
             else:
                 pred = torch.argmax(logits, dim=1)
+                
+            # --- NEW: Keep a copy of original prediction for visualization ---
+            original_pred = pred.clone()
+            # ---------------------------------------------------------------
 
             valid_mask = target != self.ignore_index
-            pred, target = pred[valid_mask], target[valid_mask]
+            pred_masked, target_masked = pred[valid_mask], target[valid_mask]
 
             count = torch.bincount(
-                (pred * self.num_classes + target), minlength=self.num_classes ** 2
+                (pred_masked * self.num_classes + target_masked), minlength=self.num_classes ** 2
             )
             confusion_matrix += count.view(self.num_classes, self.num_classes)
+            
+            # --- NEW: Save overlay images ---
+            # Save only if self.exp_dir is specified and batch size is 1
+            if vis_save_dir is not None and image_tensor.shape[0] == 1 and batch_idx <= 8:
+                try:
+                    # 1. Get RGB image: (1, 10, T, H, W) -> (H, W, 3) np.uint8
+                    # Select middle temporal instance
+                    mid_temporal_idx = image_tensor.shape[2] // 2 
+                    # Select BGR (channels 0,1,2) and reorder to RGB (2,1,0)
+                    rgb_tensor = image_tensor[0, [2, 1, 0], mid_temporal_idx, :, :] # (3, H, W)
+                    # Convert to (H, W, 3) numpy array
+                    rgb_np = rgb_tensor.cpu().permute(1, 2, 0).numpy()
+                    # Normalize for visualization
+                    rgb_np_vis = normalize_for_vis(rgb_np)
+                    img_pil = Image.fromarray(rgb_np_vis).convert('RGBA')
+
+                    # 2. Get Pred and GT masks: (1, H, W) -> (H, W, 3) np.uint8
+                    pred_labels = original_pred[0].cpu().numpy()
+                    gt_labels = original_target[0].cpu().numpy()
+                    
+                    pred_mask_rgb = map_labels_to_colors(pred_labels, self.class_colors, self.ignore_index)
+                    gt_mask_rgb = map_labels_to_colors(gt_labels, self.class_colors, self.ignore_index)
+                    
+                    pred_pil = Image.fromarray(pred_mask_rgb).convert('RGBA')
+                    gt_pil = Image.fromarray(gt_mask_rgb).convert('RGBA')
+                    
+                    # 3. Blend and Save
+                    overlay_pred = Image.blend(img_pil, pred_pil, alpha=0.5)
+                    overlay_gt = Image.blend(img_pil, gt_pil, alpha=0.5)
+                    
+                    pred_save_path = os.path.join(vis_save_dir, f"batch_{batch_idx:04d}_pred_overlay.png")
+                    gt_save_path = os.path.join(vis_save_dir, f"batch_{batch_idx:04d}_gt_overlay.png")
+                    
+                    overlay_pred.save(pred_save_path)
+                    overlay_gt.save(gt_save_path)
+                    
+                except Exception as e:
+                    self.logger.warning(f"Failed to save visualization for batch {batch_idx}: {e}")
+            # --- End of visualization saving ---
 
         torch.distributed.all_reduce(
             confusion_matrix, op=torch.distributed.ReduceOp.SUM
         )
-        #print(confusion_matrix.cpu())
+        
+        # --- NEW: Save normalized confusion matrix ---
+        if self.exp_dir is not None and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
+            cm_save_path = os.path.join(self.exp_dir, f"{model_name}_confusion_matrix.png")
+            
+            # --- Start: Filter out ignore_index from CM and labels ---
+            cm_numpy = confusion_matrix.cpu().numpy()
+            
+            # Create a boolean mask for all indices that are NOT the ignore_index
+            valid_indices_mask = np.arange(self.num_classes) != self.ignore_index
+            
+            # 1. Filter the confusion matrix (select valid rows, then valid columns)
+            cm_filtered = cm_numpy[valid_indices_mask][:, valid_indices_mask]
+            
+            # 2. Filter the class labels
+            labels_filtered = [
+                label for i, label in enumerate(self.class_labels) 
+                if i != self.ignore_index
+            ]
+            # --- End: Filtering ---
+
+            save_confusion_matrix(
+                cm_filtered,      # Pass the filtered matrix
+                labels_filtered,  # Pass the filtered labels
+                cm_save_path,
+                title=f'{model_name} Normalized Confusion Matrix'
+            )
+        # ---------------------------------------------
+        
         metrics = self.compute_metrics(confusion_matrix.cpu())
         self.log_metrics(metrics)
 

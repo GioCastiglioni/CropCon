@@ -192,6 +192,8 @@ def main(cfg: DictConfig) -> None:
             cfg.decoder,
             encoder=encoder,
         )
+    #decoder.prototypes = torch.nn.Parameter(torch.randn((cfg.dataset.num_classes, cfg.projection_dim)))
+    #torch.nn.init.kaiming_normal_(decoder.prototypes.data)
     decoder.to(device)
     decoder = torch.nn.parallel.DistributedDataParallel(
             decoder,
@@ -450,6 +452,40 @@ def main(cfg: DictConfig) -> None:
 
         else:
             model_dict = torch.load(get_best_model_ckpt_path(exp_dir), map_location=device, weights_only=False)
+            decoder.module.load_state_dict(model_dict["model"])
+
+            val_preprocessor = instantiate(
+                cfg.preprocessing.val,
+                dataset_cfg=cfg.dataset,
+                encoder_cfg=cfg.encoder,
+                _recursive_=False,
+            )
+
+            
+            raw_val_dataset: RawGeoFMDataset = instantiate(cfg.dataset, split="val")
+
+            val_dataset = GeoFMDataset(
+                raw_val_dataset, val_preprocessor, cfg.data_replicate
+            )
+
+            val_loader = DataLoader(
+                val_dataset,
+                sampler=DistributedSampler(val_dataset),
+                batch_size=cfg.test_batch_size,
+                num_workers=cfg.test_num_workers,
+                pin_memory=True,
+                persistent_workers=False,
+                worker_init_fn=seed_worker,
+                # generator=g,
+                drop_last=False,
+                collate_fn=collate_fn,
+            )
+
+            val_evaluator: Evaluator = instantiate(
+                    cfg.task.evaluator, val_loader=val_loader, exp_dir=exp_dir, device=device,
+                    dataset_name=cfg.dataset.dataset_name
+                )
+            metrics, _ = val_evaluator.evaluate(decoder, "test_model")
             
             logger.info(
                 f"Best_mIoU: {model_dict['mIoU']}\n"
@@ -465,7 +501,7 @@ def main(cfg: DictConfig) -> None:
                         "Best_mAcc": model_dict["mAcc"]
                     }
                 )
-    wandb.finish()
+    if cfg.use_wandb: wandb.finish()
 
     torch.distributed.destroy_process_group()
 
