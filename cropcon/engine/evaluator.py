@@ -5,6 +5,7 @@ from pathlib import Path
 import wandb
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -112,17 +113,8 @@ class SegEvaluator(Evaluator):
     ):
         super().__init__(val_loader, distribution, exp_dir, device, use_wandb, dataset_name)
 
-    def reshape_transform(self, tensor, height=15, width=15):
-        # Reshape (batch, seq_len, embed_dim) -> (batch, embed_dim, height, width)
-        result = tensor.reshape(tensor.size(0), height, width, tensor.size(2))
-
-        # Bring the channels to the first dimension,
-        # like in CNNs.
-        result = result.transpose(2, 3).transpose(1, 2)
-        return result
-
     @torch.no_grad()
-    def evaluate(self, model, model_name='model', model_ckpt_path=None, logit_compensation=False):
+    def evaluate(self, model, model_name='model', criterion=None, model_ckpt_path=None):
         t = time.time()
 
         if model_ckpt_path is not None:
@@ -141,25 +133,77 @@ class SegEvaluator(Evaluator):
             (self.num_classes, self.num_classes), device=self.device
         )
 
-        for batch_idx, data in enumerate(tqdm(self.val_loader, desc=tag)):
-            image, target = data["image"], data["target"]
-            image = {"v1": image["optical"].to(self.device)}
-            target = target.to(self.device)
-            logits = model(image["v1"], batch_positions=data["metadata"], return_feats=False)
-            
-            if logit_compensation: logits += self.log_priors.view(1, -1, 1, 1)
-            if logits.shape[1] == 1:
-                pred = (torch.sigmoid(logits) > 0.5).type(torch.int64).squeeze(dim=1)
-            else:
-                pred = torch.argmax(logits, dim=1)
+        if str(criterion) != "PrototypeBasedSemSegLoss":
+            for batch_idx, data in enumerate(tqdm(self.val_loader, desc=tag)):
+                image, target = data["image"], data["target"]
+                image = {"v1": image["optical"].to(self.device)}
+                target = target.to(self.device)
+                logits = model(image["v1"], batch_positions=data["metadata"])
+                
+                if logits.shape[1] == 1:
+                    pred = (torch.sigmoid(logits) > 0.5).type(torch.int64).squeeze(dim=1)
+                else:
+                    pred = torch.argmax(logits, dim=1)
 
-            valid_mask = target != self.ignore_index
-            pred, target = pred[valid_mask], target[valid_mask]
+                valid_mask = target != self.ignore_index
+                pred, target = pred[valid_mask], target[valid_mask]
 
-            count = torch.bincount(
-                (pred * self.num_classes + target), minlength=self.num_classes ** 2
-            )
-            confusion_matrix += count.view(self.num_classes, self.num_classes)
+                count = torch.bincount(
+                    (pred * self.num_classes + target), minlength=self.num_classes ** 2
+                )
+                confusion_matrix += count.view(self.num_classes, self.num_classes)
+        else:
+            for batch_idx, data in enumerate(tqdm(self.val_loader, desc=tag)):
+                image, target = data["image"], data["target"]
+                image = image["optical"].to(self.device)
+                target = target.to(self.device) # [B, H, W]
+                
+                # --- INICIO DE LA LÓGICA DE PROTOTIPO (reemplaza a model(image["v1"])) ---
+                
+                # 1. Obtener features y normalizarlos (Eq. 5) 
+                # features shape: [B, D, H, W]
+                features_norm = model.module.forward_features(
+                    image, 
+                    batch_positions=data["metadata"]
+                ) 
+                features_norm = F.normalize(features_norm, p=2, dim=1)
+                
+                B, D, H, W = features_norm.shape
+
+                # 2. Aplanar features y prototipos
+                # [B, D, H, W] -> [B, H, W, D] -> [B*H*W, D]
+                features_flat = features_norm.permute(0, 2, 3, 1).contiguous().view(-1, D)
+                
+                # [C, K, D] -> [C*K, D]
+                all_prototypes_flat = criterion.prototypes.view(self.num_classes * criterion.K, criterion.D)
+
+                # 3. Calcular similitud Coseno (producto punto)
+                # [B*H*W, D] @ [D, C*K] -> [B*H*W, C*K]
+                sim_all = features_flat @ all_prototypes_flat.T
+                
+                # 4. Encontrar el prototipo ganador (índice de 0 a C*K - 1)
+                # argmax porque maximizar similitud = minimizar distancia (coseno negativo)
+                # winning_prototype_idx shape: [B*H*W]
+                winning_prototype_idx = torch.argmax(sim_all, dim=1)
+
+                # 5. Convertir índice de prototipo a índice de CLASE
+                # Si K=10, prototipos 0-9 son clase 0, 10-19 son clase 1, etc.
+                # 
+                pred_class_flat = winning_prototype_idx // criterion.K
+                
+                # 6. Remodelar a la forma de máscara [B, H, W]
+                pred = pred_class_flat.view(B, H, W)
+
+                # --- FIN DE LA LÓGICA DE PROTOTIPO ---
+                
+                # El resto de tu código para la matriz de confusión es perfecto
+                valid_mask = target != criterion.ignore_index
+                pred, target = pred[valid_mask], target[valid_mask]
+
+                count = torch.bincount(
+                    (pred * self.num_classes + target), minlength=self.num_classes ** 2
+                )
+                confusion_matrix += count.view(self.num_classes, self.num_classes)
 
         torch.distributed.all_reduce(
             confusion_matrix, op=torch.distributed.ReduceOp.SUM
@@ -173,8 +217,8 @@ class SegEvaluator(Evaluator):
         return metrics, used_time
 
     @torch.no_grad()
-    def __call__(self, model, model_name, model_ckpt_path=None, logit_compensation=False):
-        return self.evaluate(model, model_name, model_ckpt_path, logit_compensation)
+    def __call__(self, model, model_name, model_ckpt_path=None):
+        return self.evaluate(model, model_name, model_ckpt_path)
 
     def compute_metrics(self, confusion_matrix):
         if self.ignore_index != -1:

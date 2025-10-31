@@ -1,0 +1,12 @@
+_target_: cropcon.utils.losses.PrototypeBasedSemSegLoss
+num_classes: ${dataset.num_classes}
+num_prototypes_per_class: 10
+feature_dim: 128
+ignore_index: ${dataset.ignore_index}
+momentum: 0.999
+sk_kappa: 0.05
+sk_iterations: 50
+ppc_temperature: 0.07
+lambda_ce: 1.0
+lambda_ppc: 0.1
+lambda_ppd: 0.01

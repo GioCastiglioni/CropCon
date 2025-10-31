@@ -18,9 +18,6 @@ trainer:
   log_interval: 10
   best_metric_key: mIoU
   use_wandb: ${use_wandb}
-  tau: 1.0
-  alpha: 0.6
-  bcl_config: original
 
 evaluator:
   _target_: cropcon.engine.evaluator.SegEvaluator
