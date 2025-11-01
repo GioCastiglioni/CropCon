@@ -25,6 +25,73 @@ class WeightedCrossEntropy(torch.nn.Module):
         return 'WeightedCrossEntropy'
 
 
+
+class JepaLoss(nn.Module):
+    def __init__(self, d_model, nhead=8, num_decoder_layers=6, grid_size=8):
+        super().__init__()
+        self.d_model = d_model
+        self.grid_size = (grid_size, grid_size)
+        self.num_patches = grid_size ** 2 
+
+        self.pos_encoding = nn.Parameter(torch.zeros(1, d_model, self.grid_size[0], self.grid_size[1]))
+        nn.init.trunc_normal_(self.pos_encoding, std=.02) 
+
+        self.predictor_queries = nn.Parameter(torch.zeros(1, 1, d_model))
+        nn.init.trunc_normal_(self.predictor_queries, std=.02)
+
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=d_model * 4,
+            dropout=0.1,
+            activation='gelu',
+            batch_first=True,
+            norm_first=True
+        )
+        self.predictor = nn.TransformerDecoder(
+            decoder_layer,
+            num_layers=num_decoder_layers
+        )
+
+        self.loss_fn = nn.MSELoss()
+
+    def forward(self, student_features, teacher_features, idx_context, idx_target):
+
+        B, D, H, W = student_features.shape
+        N_tgt = idx_target.shape[1]
+        
+        if H != self.grid_size[0] or W != self.grid_size[1]:
+            raise ValueError(f"Feature map grid ({H}, {W}) does not match grid_size {self.grid_size}")
+
+        student_features_pos = student_features + self.pos_encoding
+        teacher_features_pos = teacher_features + self.pos_encoding
+
+        student_seq = student_features_pos.flatten(2).permute(0, 2, 1)
+        teacher_seq = teacher_features_pos.flatten(2).permute(0, 2, 1)
+        
+        pos_encoding_flat = self.pos_encoding.flatten(2).permute(0, 2, 1)
+
+        idx_target_expanded = idx_target.unsqueeze(-1).expand(-1, -1, D)
+        
+        target_tokens = teacher_seq.gather(dim=1, index=idx_target_expanded).detach()
+
+        idx_context_expanded = idx_context.unsqueeze(-1).expand(-1, -1, D)
+        context_tokens = student_seq.gather(dim=1, index=idx_context_expanded)
+        query_tokens = self.predictor_queries.expand(B, N_tgt, -1)
+        
+        query_pos = pos_encoding_flat.expand(B, -1, -1).gather(dim=1, index=idx_target_expanded)
+        
+        queries_with_pos = query_tokens + query_pos
+
+        predictions = self.predictor(
+            tgt=queries_with_pos,
+            memory=context_tokens
+        )
+        loss = self.loss_fn(predictions, target_tokens)
+        
+        return loss
+
+
 @torch.no_grad()
 def phi_gain(a, b):
     """

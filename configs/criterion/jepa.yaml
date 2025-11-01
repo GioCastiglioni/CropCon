@@ -1,0 +1,5 @@
+_target_: cropcon.utils.losses.JepaLoss
+d_model: ${projection_dim}
+nhead: 8
+num_decoder_layers: 2
+grid_size: 8

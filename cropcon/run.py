@@ -7,6 +7,7 @@ import time
 
 import hydra
 import torch
+import torch.nn as nn
 from hydra.conf import HydraConf
 from hydra.core.hydra_config import HydraConfig
 from hydra.utils import instantiate
@@ -22,7 +23,6 @@ from cropcon.engine.evaluator import Evaluator
 from cropcon.utils.collate_fn import get_collate_fn
 from cropcon.utils.logger import init_logger
 from cropcon.utils.subset_sampler import get_subset_indices
-from cropcon.engine.trainer import Trainer
 from cropcon.utils.utils import (
     fix_seed,
     get_best_model_ckpt_path,
@@ -107,6 +107,12 @@ def main(cfg: DictConfig) -> None:
         rank = int(os.environ["RANK"])
         is_distributed = False
 
+    
+    if cfg.pretrain:
+        from cropcon.engine.pretrainer import Trainer
+    else:
+        from cropcon.engine.trainer import Trainer
+
     # true if training else false
     train_run = cfg.train
     if train_run:
@@ -184,6 +190,11 @@ def main(cfg: DictConfig) -> None:
             cfg.decoder,
             encoder=encoder,
         )
+    if cfg.pretrain: 
+        decoder.patch_conv = nn.Conv2d(decoder.topology[0], cfg.projection_dim, kernel_size=cfg.dataset.img_size//8, stride=cfg.dataset.img_size//8)
+        nn.init.kaiming_normal_(decoder.patch_conv.weight, mode='fan_in', nonlinearity='linear')
+        decoder.criterion = instantiate(cfg.criterion)
+
     decoder.to(device)
     decoder = torch.nn.parallel.DistributedDataParallel(
             decoder,
@@ -191,6 +202,33 @@ def main(cfg: DictConfig) -> None:
             output_device=local_rank,
             find_unused_parameters=cfg.finetune,
         )
+
+    if cfg.pretrain:
+        teacher: Decoder = instantiate(cfg.decoder, encoder=encoder)
+        teacher.patch_conv = nn.Conv2d(
+            teacher.topology[0],
+            cfg.projection_dim,
+            kernel_size=cfg.dataset.img_size // cfg.criterion.grid_size,
+            stride=cfg.dataset.img_size // cfg.criterion.grid_size
+            )
+        teacher.to(device)
+        teacher.load_state_dict(decoder.module.state_dict(), strict=False)
+        teacher.mask_token = nn.Parameter(
+            torch.zeros(
+                1,
+                teacher.encoder.in_channels,
+                cfg.dataset.img_size,
+                cfg.dataset.img_size,
+                device=device
+                )
+            )
+        nn.init.kaiming_normal_(teacher.mask_token, mode='fan_in', nonlinearity='relu')
+        teacher = torch.nn.parallel.DistributedDataParallel(
+                teacher,
+                device_ids=[local_rank],
+                output_device=local_rank,
+                find_unused_parameters=cfg.finetune,
+            )
 
     logger.info(
             "Built {} for {} encoder.".format(
@@ -307,13 +345,18 @@ def main(cfg: DictConfig) -> None:
             collate_fn=collate_fn,
         )
 
-        criterion = instantiate(cfg.criterion)
-        criterion = criterion.to(device)
+        if not cfg.pretrain:
+            criterion = instantiate(cfg.criterion)
+            criterion = criterion.to(device)
+        else: criterion = decoder.module.criterion
 
         params = [
             {'params': non_encoder_params(decoder.module), 'lr': cfg.optimizer.lr},]
         if cfg.finetune:
             params.append({'params': decoder.module.encoder.parameters(), 'lr': cfg.optimizer.lr * cfg.ft_rate})
+
+        if cfg.pretrain:
+            params.append({'params': [teacher.module.mask_token], 'lr': cfg.optimizer.lr})
 
         optimizer = instantiate(cfg.optimizer, params=None)
         optimizer = optimizer(params=params)
@@ -327,21 +370,35 @@ def main(cfg: DictConfig) -> None:
             total_iters=len(train_loader) * cfg.task.trainer.n_epochs,
         )
         
-        val_evaluator: Evaluator = instantiate(
-                    cfg.task.evaluator, val_loader=val_loader, exp_dir=exp_dir, device=device,
-                    dataset_name=cfg.dataset.dataset_name
-                )
-        trainer: Trainer = instantiate(
-                    cfg.task.trainer,
-                    model=decoder,
-                    train_loader=train_loader,
-                    lr_scheduler=lr_scheduler,
-                    optimizer=optimizer,
-                    criterion=criterion,
-                    evaluator=val_evaluator,
-                    exp_dir=exp_dir,
-                    device=device,
-                )
+        if not cfg.pretrain:
+            val_evaluator: Evaluator = instantiate(
+                        cfg.task.evaluator, val_loader=val_loader, exp_dir=exp_dir, device=device,
+                        dataset_name=cfg.dataset.dataset_name
+                    )
+            trainer: Trainer = instantiate(
+                        cfg.task.trainer,
+                        model=decoder,
+                        train_loader=train_loader,
+                        lr_scheduler=lr_scheduler,
+                        optimizer=optimizer,
+                        criterion=criterion,
+                        evaluator=val_evaluator,
+                        exp_dir=exp_dir,
+                        device=device,
+                    )
+        else:
+            trainer: Trainer = instantiate(
+                        cfg.task.trainer,
+                        model=decoder,
+                        teacher=teacher,
+                        train_loader=train_loader,
+                        val_loader=val_loader,
+                        lr_scheduler=lr_scheduler,
+                        optimizer=optimizer,
+                        criterion=criterion,
+                        exp_dir=exp_dir,
+                        device=device,
+                    )
 
         # resume training if model_checkpoint is provided
         if cfg.ckpt_dir is not None:
@@ -349,7 +406,8 @@ def main(cfg: DictConfig) -> None:
 
         trainer.train()
 
-    if cfg.dataset.support_test:
+    if not cfg.pretrain:
+        if cfg.dataset.support_test:
             # Evaluation
             test_preprocessor = instantiate(
                 cfg.preprocessing.test,
@@ -394,7 +452,7 @@ def main(cfg: DictConfig) -> None:
                     }
                 )
 
-    else:
+        else:
             model_dict = torch.load(get_best_model_ckpt_path(exp_dir), map_location=device, weights_only=False)
             
             logger.info(

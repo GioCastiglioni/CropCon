@@ -5,6 +5,7 @@ import os
 import pathlib
 import time
 import numpy as np
+import math
 
 import torch
 import torch.nn as nn
@@ -17,22 +18,19 @@ from torch.utils.data import DataLoader, Subset
 
 from cropcon.utils.logger import RunningAverageMeter, sec_to_hm
 from cropcon.utils.losses import CropConLoss
-from cropcon.utils.utils import ConsistentTransform
+from cropcon.utils.utils import ConsistentTemporalTransform
 from scipy.ndimage import label as lbl
-from grokfast import gradfilter_ma, gradfilter_ema
 
 class Trainer:
     def __init__(
         self,
         model: nn.Module,
+        teacher: nn.Module,
         train_loader: DataLoader,
         val_loader: DataLoader,
         criterion: nn.Module,
-        on_logits: bool,
-        distribution: list,
         optimizer: Optimizer,
         lr_scheduler: LRScheduler,
-        evaluator: torch.nn.Module,
         n_epochs: int,
         exp_dir: pathlib.Path | str,
         device: torch.device,
@@ -41,8 +39,6 @@ class Trainer:
         ckpt_interval: int,
         eval_interval: int,
         log_interval: int,
-        tau: float,
-        alpha: float,
     ):
         """Initialize the Trainer.
 
@@ -50,10 +46,8 @@ class Trainer:
             model (nn.Module): model to train (encoder + decoder).
             train_loader (DataLoader): train data loader.
             criterion (nn.Module): criterion to compute the loss.
-            distribution (list): class distributions.
             optimizer (Optimizer): optimizer to update the model's parameters.
             lr_scheduler (LRScheduler): lr scheduler to update the learning rate.
-            evaluator (torch.nn.Module): task evaluator to evaluate the model.
             n_epochs (int): number of epochs to train the model.
             exp_dir (pathlib.Path | str): path to the experiment directory.
             device (torch.device): model
@@ -62,20 +56,18 @@ class Trainer:
             ckpt_interval (int): interval to save the checkpoint.
             eval_interval (int): interval to evaluate the model.
             log_interval (int): interval to log the training information.
-            tau (float): temperature parameter for SupCon.
-            alpha (float): weighting factor for CE and SupCon losses.
         """
         self.rank = int(os.environ["RANK"])
         self.criterion = criterion
         self.logit_compensation = str(self.criterion) == "LogitCompensation"
-        self.distribution = distribution
         self.model = model
+        self.teacher = teacher
+        self.teacher.eval()
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.batch_per_epoch = len(self.train_loader)
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
-        self.evaluator = evaluator
         self.n_epochs = n_epochs
         self.logger = logging.getLogger()
         self.exp_dir = exp_dir
@@ -84,8 +76,6 @@ class Trainer:
         self.ckpt_interval = ckpt_interval
         self.eval_interval = eval_interval
         self.log_interval = log_interval
-        self.grokfast = False
-        self.on_logits = on_logits
 
         self.training_stats = {
             name: RunningAverageMeter(length=self.batch_per_epoch)
@@ -112,17 +102,19 @@ class Trainer:
 
             self.wandb = wandb
         
-        self.alpha = alpha
-        
-        self.transform = ConsistentTransform(h_w=self.model.module.encoder.input_size, degrees=45, view=1).to(self.device)
+        self.transform = ConsistentTemporalTransform(h_w=self.model.module.encoder.input_size, degrees=45, view=1).to(self.device)
 
         self.n_classes = self.model.module.num_classes
+
+        self.ema_momentum = 0.996
+
+        self.n_context = 21
+        self.n_target = 12
+        self.grid_size = 8
     
     def train(self) -> None:
         """Train the model for n_epochs then evaluate the model and save the best model."""
         # end_time = time.time()
-        grads=None
-        grads_proj=None
         for epoch in range(self.start_epoch, self.n_epochs):
             # train the network for one epoch
             if epoch % self.eval_interval == 0:
@@ -136,7 +128,7 @@ class Trainer:
             # set sampler
             self.t = time.time()
             self.train_loader.sampler.set_epoch(epoch)
-            grads, grads_proj = self.train_one_epoch(epoch, grads=grads, grads_proj=grads_proj)
+            self.train_one_epoch(epoch)
             if epoch % self.ckpt_interval == 0 and epoch != self.start_epoch: self.save_model(epoch)
             torch.cuda.empty_cache()
 
@@ -148,7 +140,7 @@ class Trainer:
 
         torch.cuda.empty_cache()
 
-    def train_one_epoch(self, epoch: int, grads=None, grads_proj=None) -> None:
+    def train_one_epoch(self, epoch: int) -> None:
         """Train model for one epoch.
 
         Args:
@@ -159,22 +151,45 @@ class Trainer:
         end_time = time.time()
         for batch_idx, data in enumerate(self.train_loader):
 
-            
-            image = {"v1": data["image"]["optical"].to(self.device)}
-            mask = {"v1": data["target"].to(self.device)}
+            image = data["image"]["optical"].to(self.device)
+            B, C, T, H, W = image.shape
 
-            image["v2"], mask["v2"] = self.temporal_transform(image["v1"], mask["v1"])
+            mask_token = self.teacher.module.mask_token.unsqueeze(2).expand(-1, -1, T, -1, -1)
+
+            rand_indices = torch.stack([torch.randperm(self.grid_size**2, device=self.device) for _ in range(B)])
+
+            PATCH_SIZE = H // self.grid_size
+
+            idx_context = rand_indices[:, :self.n_context].long()
+            mask_ctx = torch.zeros(B, self.grid_size**2, device=self.device)
+            mask_ctx.scatter_(dim=1, index=idx_context, value=1.0)
+            mask_ctx = mask_ctx.view(B, self.grid_size, self.grid_size)
+            mask_ctx = mask_ctx.repeat_interleave(PATCH_SIZE, dim=1).repeat_interleave(PATCH_SIZE, dim=2)
+            mask_ctx = mask_ctx.unsqueeze(1).unsqueeze(2).expand_as(image).bool()
+
+            idx_target = rand_indices[:, self.n_context : self.n_context + self.n_target].long()
+            mask_tgt = torch.zeros(B, self.grid_size**2, device=self.device)
+            mask_tgt.scatter_(dim=1, index=idx_target, value=1.0)
+            mask_tgt = mask_tgt.view(B, self.grid_size, self.grid_size)
+            mask_tgt = mask_tgt.repeat_interleave(PATCH_SIZE, dim=1).repeat_interleave(PATCH_SIZE, dim=2)
+            mask_tgt = mask_tgt.unsqueeze(1).unsqueeze(2).expand_as(image).bool()
+            
+            image_context = torch.where(mask_ctx, image, mask_token)
+            image_target = torch.where(mask_tgt, image, mask_token) 
 
             self.training_stats["data_time"].update(time.time() - end_time)
 
             with torch.autocast(
                 "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
             ):
-                feat_v1 = self.model.module.forward_features(image["v1"], batch_positions=data["metadata"])
+                feat_student = self.model.module.forward_features(image_context, batch_positions=data["metadata"])
+                feat_student = self.model.module.patch_conv(feat_student)
 
-                feat_v2 = self.model.module.forward_features(image["v2"], batch_positions=data["metadata"])
+                with torch.no_grad():
+                    feat_teacher = self.teacher.module.forward_features(image_target, batch_positions=data["metadata"])
+                    feat_teacher = self.teacher.module.patch_conv(feat_teacher)
 
-                loss = self.compute_loss(feat_v1, feat_v2, mask["v1"], mask["v2"])
+                loss = self.compute_loss(feat_student, feat_teacher, idx_context, idx_target)
                 
             self.optimizer.zero_grad()
 
@@ -184,12 +199,11 @@ class Trainer:
                 )
 
             self.scaler.scale(loss).backward()
-            if self.grokfast:
-                self.scaler.unscale_(self.optimizer)
-                grads = gradfilter_ema(self.model, grads=grads)
-                grads_proj = gradfilter_ema(self.projector, grads=grads_proj)
             self.scaler.step(self.optimizer)
             self.scaler.update()
+
+            self._update_teacher_ema(epoch, batch_idx)
+
             self.training_stats['loss'].update(loss.item())
             if (batch_idx + 1) % self.log_interval == 0:
                 self.log(batch_idx + 1, epoch)
@@ -212,7 +226,7 @@ class Trainer:
 
             self.training_stats["batch_time"].update(time.time() - end_time)
             end_time = time.time()
-        return grads, grads_proj
+        return
 
     @torch.no_grad()
     def evaluate(self, epoch: int):
@@ -227,65 +241,119 @@ class Trainer:
         loss = 0
         for batch_idx, data in enumerate(self.val_loader):
 
-            image = {"v1": data["image"]["optical"].to(self.device)}
-            mask = {"v1": data["target"].to(self.device)}
+            image = data["image"]["optical"].to(self.device)
+            B, C, T, H, W = image.shape
 
-            image["v2"], mask["v2"] = self.temporal_transform(image["v1"], mask["v1"])
+            mask_token = self.teacher.module.mask_token.unsqueeze(2).expand(-1, -1, T, -1, -1)
+
+            rand_indices = torch.stack([torch.randperm(self.grid_size**2, device=self.device) for _ in range(B)])
+
+            PATCH_SIZE = H // self.grid_size
+
+            idx_context = rand_indices[:, :self.n_context].long()
+            mask_ctx = torch.zeros(B, self.grid_size**2, device=self.device)
+            mask_ctx.scatter_(dim=1, index=idx_context, value=1.0)
+            mask_ctx = mask_ctx.view(B, self.grid_size, self.grid_size)
+            mask_ctx = mask_ctx.repeat_interleave(PATCH_SIZE, dim=1).repeat_interleave(PATCH_SIZE, dim=2)
+            mask_ctx = mask_ctx.unsqueeze(1).unsqueeze(2).expand_as(image).bool()
+
+            idx_target = rand_indices[:, self.n_context : self.n_context + self.n_target].long()
+            mask_tgt = torch.zeros(B, self.grid_size**2, device=self.device)
+            mask_tgt.scatter_(dim=1, index=idx_target, value=1.0)
+            mask_tgt = mask_tgt.view(B, self.grid_size, self.grid_size)
+            mask_tgt = mask_tgt.repeat_interleave(PATCH_SIZE, dim=1).repeat_interleave(PATCH_SIZE, dim=2)
+            mask_tgt = mask_tgt.unsqueeze(1).unsqueeze(2).expand_as(image).bool()
+            
+            image_context = torch.where(mask_ctx, image, mask_token)
+            image_target = torch.where(mask_tgt, image, mask_token) 
 
             self.training_stats["data_time"].update(time.time() - end_time)
 
             with torch.autocast(
                 "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
             ):
-                feat_v1 = self.model.module.forward_features(image["v1"], batch_positions=data["metadata"])
+                feat_student = self.model.module.forward_features(image_context, batch_positions=data["metadata"])
+                feat_student = self.model.module.patch_conv(feat_student)
 
-                feat_v2 = self.model.module.forward_features(image["v2"], batch_positions=data["metadata"])
+                feat_teacher = self.teacher.module.forward_features(image_target, batch_positions=data["metadata"])
+                feat_teacher = self.teacher.module.patch_conv(feat_teacher)
 
-                batch_loss = self.compute_loss(feat_v1, feat_v2, mask["v1"], mask["v2"])
+                loss += self.compute_loss(feat_student, feat_teacher.detach(), idx_context, idx_target)
 
-                if batch_idx % self.log_interval == 0: self.logger.info(f"Val batch: {batch_idx+1}/{len(self.val_loader)}")
-
-                loss += batch_loss.item()
-
+        loss /= (batch_idx+1)
         if self.use_wandb and self.rank == 0:
             self.wandb.log(
                 {
-                    "val_loss": loss/(batch_idx+1),
+                    "val_loss": loss,
                     "epoch": epoch
                 },
                 step = epoch * len(self.train_loader)
             )
-        return batch_loss
+        return loss
 
     @torch.no_grad()
-    def temporal_transform(self, x: torch.Tensor, mask: torch.Tensor):
+    def temporal_transform(self, x: torch.Tensor):
         """
         x:     [B, C, T, H, W]
-        mask:  [B, H, W]
         """
         B, C, Temp, H, W = x.shape
+        
+        out_h, out_w = self.transform.h_w, self.transform.h_w
 
-        # Reshape into [B*T, C, H, W]
-        x = x.permute(0, 2, 1, 3, 4).reshape(B*Temp, C, H, W)  # → [B*T, C, H, W]
+        x_permuted = x.permute(0, 2, 1, 3, 4)
 
-        # Prepare output tensors
-        x_out = torch.empty((B,C,Temp,H,W), device=x.device)
-        mask_out = torch.empty((B,H,W), dtype=torch.long, device=x.device)
+        x_out = torch.empty((B, C, Temp, out_h, out_w), device=x.device, dtype=x.dtype)
 
         for b in range(B):
-            x_b = x[b*Temp:(b+1)*Temp]  # [T, C, H, W]
+            x_b = x_permuted[b]
 
-            m_b = mask[b].expand(Temp, H, W).unsqueeze(1)
-            sample = self.transform({"image": x_b, "mask": m_b})
+            sample = self.transform({"image": x_b})
 
-            x_b = sample["image"].permute(1, 0, 2, 3)
-            m_b = sample["mask"][0].squeeze()
+            x_b_transformed = sample["image"].permute(1, 0, 2, 3)
 
-            x_out[b] = x_b
-            mask_out[b] = m_b
+            x_out[b] = x_b_transformed
 
-        return x_out, mask_out
-    
+        return x_out
+
+    @torch.no_grad()
+    def _update_teacher_ema(self, epoch: int, batch_idx: int):
+        """
+        Actualiza el modelo teacher usando Exponential Moving Average (EMA)
+        y sincroniza los buffers (BatchNorm).
+        
+        Esta versión itera por nombre para manejar arquitecturas asimétricas.
+        """
+        
+        # 1. Calcular el momentum (usando tu fórmula lineal)
+        current_step = epoch * self.batch_per_epoch + batch_idx
+        total_steps = self.batch_per_epoch * self.n_epochs
+        m = self.ema_momentum + (1 - self.ema_momentum) * (current_step / total_steps)
+
+        # 2. Crear diccionarios de parámetros (nombre -> tensor)
+        # .module accede al modelo dentro del wrapper DDP
+        student_params = dict(self.model.module.named_parameters())
+        teacher_params = dict(self.teacher.module.named_parameters())
+
+        # 3. Actualizar PARÁMETROS (Pesos) vía EMA
+        for name, student_param in student_params.items():
+            # Comprobar si este parámetro TAMBIÉN existe en el teacher
+            # Esto omitirá 'criterion.*' y otros params solo del student
+            if name in teacher_params:
+                teacher_param = teacher_params[name]
+                # Aplicar la actualización EMA
+                teacher_param.data.mul_(m).add_(student_param.data, alpha=1 - m)
+        
+        # 4. Sincronizar BUFFERS (BatchNorm) vía COPIA DIRECTA
+        student_buffers = dict(self.model.module.named_buffers())
+        teacher_buffers = dict(self.teacher.module.named_buffers())
+
+        for name, student_buffer in student_buffers.items():
+            # Comprobar si este buffer TAMBIÉN existe en el teacher
+            if name in teacher_buffers:
+                teacher_buffer = teacher_buffers[name]
+                # Copiar el buffer directamente
+                teacher_buffer.data.copy_(student_buffer.data)
+
     def get_checkpoint(self, epoch: int) -> dict[str, dict | int]:
         """Create a checkpoint dictionary, containing references to the pytorch tensors.
 
@@ -360,7 +428,7 @@ class Trainer:
         """Update the best checkpoint according to the loss.
 
         Args:
-            eval_metrics (dict[float, list[float]]): metrics computed by the evaluator on the validation set.
+            eval_metrics (dict[float, list[float]]): metrics computed on the validation set.
             epoch (int): number of the epoch.
         """
         if self.best_metric_comp(loss, self.best_metric):
@@ -370,9 +438,9 @@ class Trainer:
                 epoch, is_best=True, checkpoint=best_ckpt
             )
 
-    def compute_loss(self, feat_v1: torch.Tensor, feat_v2: torch.Tensor, mask1: torch.Tensor, mask2: torch.Tensor) -> torch.Tensor:
+    def compute_loss(self, feat_v1: torch.Tensor, feat_v2: torch.Tensor, idx1: torch.Tensor, idx2: torch.Tensor) -> torch.Tensor:
         """Compute the loss"""
-        return self.criterion(feat_v1, feat_v2, mask1, mask2)
+        return self.criterion(feat_v1, feat_v2, idx1, idx2)
 
     def log(self, batch_idx: int, epoch) -> None:
         """Log the information.

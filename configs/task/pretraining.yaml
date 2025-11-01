@@ -2,14 +2,13 @@ trainer:
   _target_: cropcon.engine.pretrainer.Trainer
   # params overwritten in run
   model: null
+  teacher: null
   train_loader: null
   optimizer: null
   lr_scheduler: null
-  evaluator: null
   exp_dir: null
   device: null
   criterion: null
-  on_logits: false
 
   # params to adapt
   n_epochs: 80
@@ -18,7 +17,5 @@ trainer:
   eval_interval: 1
   log_interval: 10
   use_wandb: ${use_wandb}
-  tau: 0.1
-  alpha: 0.0
 
 
