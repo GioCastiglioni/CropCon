@@ -34,8 +34,28 @@ def CosineAnnealingLR(
     return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, int(total_iters*lr_milestones[0]))
 
 def CosineAnnealingWarmRestarts(
-    optimizer: Optimizer, total_iters: int, lr_milestones: list[float]
+    optimizer: Optimizer, total_iters: int, lr_milestones: list[float], warmup_epochs = 1, n_epochs=100
 ) -> LRScheduler:
-    return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, int(total_iters*lr_milestones[0]) + 1)
+
+    warmup_iters = warmup_epochs * (total_iters // n_epochs)
+
+    scheduler_warmup = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=1e-8,
+        end_factor=1.0,
+        total_iters=warmup_iters
+    )
+
+    scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer,
+        int((total_iters - warmup_iters)*lr_milestones[0]) + 1
+    )
+
+    lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[scheduler_warmup, scheduler_cosine],
+        milestones=[warmup_iters] # El punto (en pasos) donde cambian
+    )
+    return lr_scheduler
 
 
