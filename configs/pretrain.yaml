@@ -10,7 +10,7 @@ wandb_project: ""
 num_workers: 4
 batch_size: 8
 lars: false
-projection_dim: 384
+projection_dim: 256
 
 test_num_workers: 4
 test_batch_size: 1

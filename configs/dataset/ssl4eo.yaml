@@ -1,0 +1,66 @@
+_target_: cropcon.datasets.ssl4eo.SSL4EO
+dataset_name: SSL4EO
+root_path: /home/gcastiglioni/workspace/ssl4eo
+download_url: null
+auto_download: False
+
+img_size: 264
+multi_temporal: 4
+multi_modal: False
+fold_config: 1
+support_test: False
+
+# classes
+ignore_index: -1
+num_classes: 1
+classes: 
+  - No Label
+distribution:
+  - 1.0
+
+bands:
+  optical:
+    - B1
+    - B2
+    - B3
+    - B4
+    - B5
+    - B6
+    - B7
+    - B8
+    - B8A
+    - B9
+    - B11
+    - B12
+data_mean:
+  optical:
+  - 19.2882
+  - 22.6848
+  - 29.36835
+  - 33.3438
+  - 41.7588
+  - 56.4213
+  - 62.271
+  - 64.74195
+  - 66.37395
+  - 68.0034
+  - 60.9144
+  - 46.44825
+data_std:
+  optical:
+  - 28.3407
+  - 29.55705
+  - 30.29655
+  - 35.0676
+  - 35.1033
+  - 34.6443
+  - 36.1692
+  - 37.6482
+  - 36.71745
+  - 40.34355
+  - 37.24785
+  - 34.4811 
+data_min:
+  optical: [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,]
+data_max:
+  optical: [255., 255., 255., 255., 255., 255., 255., 255., 255., 255., 255., 255.] 

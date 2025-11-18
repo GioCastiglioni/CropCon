@@ -191,9 +191,50 @@ def main(cfg: DictConfig) -> None:
             encoder=encoder,
         )
     if cfg.pretrain: 
-        decoder.patch_conv = nn.Conv2d(decoder.topology[0], cfg.projection_dim, kernel_size=cfg.dataset.img_size//8, stride=cfg.dataset.img_size//8)
-        nn.init.kaiming_normal_(decoder.patch_conv.weight, mode='fan_in', nonlinearity='linear')
+        decoder.patch_conv = nn.Sequential(
+            nn.Conv2d(
+                decoder.topology[0], 
+                cfg.projection_dim*2, 
+                kernel_size=encoder.input_size // cfg.criterion.grid_size, 
+                stride=encoder.input_size // cfg.criterion.grid_size
+            ),
+            
+            nn.GroupNorm(1, cfg.projection_dim*2),
+            nn.GELU(),
+            nn.Conv2d(
+                cfg.projection_dim*2, 
+                cfg.projection_dim, 
+                kernel_size=1, 
+                stride=1
+            )
+        )
+        nn.init.kaiming_normal_(
+            decoder.patch_conv[0].weight, 
+            mode='fan_in', 
+            nonlinearity='relu'
+        )
+        if decoder.patch_conv[0].bias is not None:
+            nn.init.constant_(decoder.patch_conv[0].bias, 0)
+        nn.init.constant_(decoder.patch_conv[1].weight, 1)
+        nn.init.constant_(decoder.patch_conv[1].bias, 0)
+        nn.init.kaiming_normal_(
+            decoder.patch_conv[3].weight, 
+            mode='fan_in', 
+            nonlinearity='linear'
+        )
+        if decoder.patch_conv[3].bias is not None:
+            nn.init.constant_(decoder.patch_conv[3].bias, 0)
         decoder.criterion = instantiate(cfg.criterion)
+
+        mask_tensor = torch.zeros(
+            1, 
+            len(encoder.input_bands), 
+            encoder.input_size, 
+            encoder.input_size, 
+            device=device
+        )
+        nn.init.kaiming_normal_(mask_tensor, mode='fan_in', nonlinearity='relu')
+        decoder.mask_token = nn.Parameter(mask_tensor)
 
     decoder.to(device)
     decoder = torch.nn.parallel.DistributedDataParallel(
@@ -204,25 +245,52 @@ def main(cfg: DictConfig) -> None:
         )
 
     if cfg.pretrain:
-        teacher: Decoder = instantiate(cfg.decoder, encoder=encoder)
-        teacher.patch_conv = nn.Conv2d(
-            teacher.topology[0],
-            cfg.projection_dim,
-            kernel_size=cfg.dataset.img_size // cfg.criterion.grid_size,
-            stride=cfg.dataset.img_size // cfg.criterion.grid_size
+        encoder_teacher: Encoder = instantiate(cfg.encoder)
+        teacher: Decoder = instantiate(cfg.decoder, encoder=encoder_teacher)
+        teacher.patch_conv = nn.Sequential(
+            nn.Conv2d(
+                teacher.topology[0], 
+                cfg.projection_dim*2, 
+                kernel_size=encoder.input_size // cfg.criterion.grid_size, 
+                stride=encoder.input_size // cfg.criterion.grid_size
+            ),
+            nn.GroupNorm(1, cfg.projection_dim*2),
+            nn.GELU(),
+            nn.Conv2d(
+                cfg.projection_dim*2, 
+                cfg.projection_dim, 
+                kernel_size=1, 
+                stride=1
             )
+        )
+        nn.init.kaiming_normal_(
+            teacher.patch_conv[0].weight, 
+            mode='fan_in', 
+            nonlinearity='relu'
+        )
+        if teacher.patch_conv[0].bias is not None:
+            nn.init.constant_(teacher.patch_conv[0].bias, 0)
+        nn.init.constant_(teacher.patch_conv[1].weight, 1)
+        nn.init.constant_(teacher.patch_conv[1].bias, 0)
+        nn.init.kaiming_normal_(
+            teacher.patch_conv[3].weight, 
+            mode='fan_in', 
+            nonlinearity='linear'
+        )
+        if teacher.patch_conv[3].bias is not None:
+            nn.init.constant_(teacher.patch_conv[3].bias, 0)
+        teacher.criterion = instantiate(cfg.criterion)
+        mask_tensor_teacher = torch.zeros(
+            1, 
+            len(encoder_teacher.input_bands), 
+            encoder_teacher.input_size, 
+            encoder_teacher.input_size, 
+            device=device
+        )
+        nn.init.kaiming_normal_(mask_tensor_teacher, mode='fan_in', nonlinearity='relu')
+        teacher.mask_token = nn.Parameter(mask_tensor_teacher)
         teacher.to(device)
-        teacher.load_state_dict(decoder.module.state_dict(), strict=False)
-        teacher.mask_token = nn.Parameter(
-            torch.zeros(
-                1,
-                teacher.encoder.in_channels,
-                cfg.dataset.img_size,
-                cfg.dataset.img_size,
-                device=device
-                )
-            )
-        nn.init.kaiming_normal_(teacher.mask_token, mode='fan_in', nonlinearity='relu')
+        teacher.load_state_dict(decoder.module.state_dict())
         teacher = torch.nn.parallel.DistributedDataParallel(
                 teacher,
                 device_ids=[local_rank],
@@ -238,9 +306,9 @@ def main(cfg: DictConfig) -> None:
     
     logger.info(f"Total parameters: {sum(p.numel() for p in decoder.module.parameters())}")
 
-    def non_encoder_params(module):
-        for name, param in module.named_parameters():
-            if not name.startswith("encoder"):
+    def non_segment_params(model: nn.Module) -> iter:
+        for name, param in model.named_parameters():
+            if not name.startswith("out_conv."):
                 yield param
 
     modalities = list(encoder.input_bands.keys())
@@ -270,7 +338,7 @@ def main(cfg: DictConfig) -> None:
 
         if 0 < cfg.limited_label_train < 1:
             indices_dir = pathlib.Path(cfg.work_dir) / str(cfg.dataset["dataset_name"])
-            indices_file = indices_dir / f"train_{int(cfg.limited_label_train*100)}.pt"
+            indices_file = indices_dir / f"train_{int(cfg.limited_label_train*100)}_{cfg.dataset.fold_config}.pt"
             
             if is_main_process:
                 if not indices_file.exists():
@@ -320,7 +388,7 @@ def main(cfg: DictConfig) -> None:
         # get train val data loaders
         train_loader = DataLoader(
             train_dataset,
-            sampler=DistributedSampler(train_dataset),
+            sampler=DistributedSampler(train_dataset, drop_last=True, shuffle=True),
             batch_size=cfg.batch_size,
             num_workers=cfg.num_workers,
             pin_memory=True,
@@ -334,14 +402,14 @@ def main(cfg: DictConfig) -> None:
 
         val_loader = DataLoader(
             val_dataset,
-            sampler=DistributedSampler(val_dataset),
+            sampler=DistributedSampler(val_dataset, drop_last=True, shuffle=False),
             batch_size=cfg.test_batch_size,
             num_workers=cfg.test_num_workers,
             pin_memory=True,
             persistent_workers=False,
             worker_init_fn=seed_worker,
             # generator=g,
-            drop_last=False,
+            drop_last=True,
             collate_fn=collate_fn,
         )
 
@@ -350,13 +418,12 @@ def main(cfg: DictConfig) -> None:
             criterion = criterion.to(device)
         else: criterion = decoder.module.criterion
 
-        params = [
-            {'params': non_encoder_params(decoder.module), 'lr': cfg.optimizer.lr},]
-        if cfg.finetune:
-            params.append({'params': decoder.module.encoder.parameters(), 'lr': cfg.optimizer.lr * cfg.ft_rate})
+        params = []
 
-        if cfg.pretrain:
-            params.append({'params': [teacher.module.mask_token], 'lr': cfg.optimizer.lr})
+        if not cfg.pretrain: 
+            params.append({'params': decoder.module.out_conv.parameters(), 'lr': cfg.optimizer.lr})
+        if cfg.finetune:
+            params.append({'params': non_segment_params(decoder.module), 'lr': cfg.optimizer.lr * cfg.ft_rate})
 
         optimizer = instantiate(cfg.optimizer, params=None)
         optimizer = optimizer(params=params)
@@ -372,7 +439,7 @@ def main(cfg: DictConfig) -> None:
         
         if not cfg.pretrain:
             val_evaluator: Evaluator = instantiate(
-                        cfg.task.evaluator, val_loader=val_loader, exp_dir=exp_dir, device=device,
+                        cfg.task.evaluator, val_loader=val_loader, criterion=criterion, exp_dir=exp_dir, device=device,
                         dataset_name=cfg.dataset.dataset_name
                     )
             trainer: Trainer = instantiate(

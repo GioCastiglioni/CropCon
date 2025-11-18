@@ -4,7 +4,7 @@ from torch.optim.optimizer import Optimizer
 
 
 def MultiStepLR(
-    optimizer: Optimizer, total_iters: int, lr_milestones: list[float]
+    optimizer: Optimizer, total_iters: int, lr_milestones: list[float], warmup_epochs: int = 0, n_epochs: int = 100
 ) -> LRScheduler:
     
     """
@@ -23,9 +23,26 @@ def MultiStepLR(
         LRScheduler: A PyTorch learning rate scheduler that decays the learning rate at specified milestones.
     """
 
-    return torch.optim.lr_scheduler.MultiStepLR(
-        optimizer, [int(total_iters * r) for r in lr_milestones], gamma=0.1
+    warmup_iters = warmup_epochs * (total_iters // n_epochs)
+
+    scheduler_warmup = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=0.01,
+        end_factor=1.0,
+        total_iters=warmup_iters
     )
+
+    scheduler_multi_step = torch.optim.lr_scheduler.MultiStepLR(
+        optimizer, [(int((total_iters - warmup_iters) * r) + 1) for r in lr_milestones], gamma=0.1
+    )
+
+    lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[scheduler_warmup, scheduler_multi_step],
+        milestones=[warmup_iters]
+    )
+
+    return lr_scheduler
 
 
 def CosineAnnealingLR(
@@ -41,20 +58,21 @@ def CosineAnnealingWarmRestarts(
 
     scheduler_warmup = torch.optim.lr_scheduler.LinearLR(
         optimizer,
-        start_factor=1e-8,
+        start_factor=0.01,
         end_factor=1.0,
         total_iters=warmup_iters
     )
 
     scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer,
-        int((total_iters - warmup_iters)*lr_milestones[0]) + 1
+        int((total_iters - warmup_iters)*lr_milestones[0]) + 1,
+        eta_min = 1e-6
     )
 
     lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
         optimizer,
         schedulers=[scheduler_warmup, scheduler_cosine],
-        milestones=[warmup_iters] # El punto (en pasos) donde cambian
+        milestones=[warmup_iters]
     )
     return lr_scheduler
 

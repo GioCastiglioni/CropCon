@@ -1,7 +1,6 @@
 import torch
 from torch.nn import functional as F
 import torch.nn as nn
-from typing import List, Tuple
 import torch.distributed as dist
 
 
@@ -25,7 +24,6 @@ class WeightedCrossEntropy(torch.nn.Module):
         return 'WeightedCrossEntropy'
 
 
-
 class JepaLoss(nn.Module):
     def __init__(self, d_model, nhead=8, num_decoder_layers=6, grid_size=8):
         super().__init__()
@@ -42,8 +40,8 @@ class JepaLoss(nn.Module):
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=d_model,
             nhead=nhead,
-            dim_feedforward=d_model * 4,
-            dropout=0.1,
+            dim_feedforward=d_model * 2,
+            dropout=1/3,
             activation='gelu',
             batch_first=True,
             norm_first=True
@@ -53,43 +51,86 @@ class JepaLoss(nn.Module):
             num_layers=num_decoder_layers
         )
 
-        self.loss_fn = nn.MSELoss()
+        self.v = 2
+        self.i = 5
+        self.c = 1
 
-    def forward(self, student_features, teacher_features, idx_context, idx_target):
-
-        B, D, H, W = student_features.shape
-        N_tgt = idx_target.shape[1]
+    def forward(self, student_features, teacher_features, mask_ctx_1d, mask_tgt_1d):
         
+        B, D, H, W = student_features.shape
         if H != self.grid_size[0] or W != self.grid_size[1]:
             raise ValueError(f"Feature map grid ({H}, {W}) does not match grid_size {self.grid_size}")
+        
+        var_loss = torch.tensor(0.0, device=student_features.device)
+        cov_loss = torch.tensor(0.0, device=student_features.device)
+
+        if B >= 2:
+            
+            z_avg = student_features.mean(dim=[2, 3]) # Shape: [B, D]
+            
+            std = torch.sqrt(z_avg.var(dim=0) + 1e-5) # Shape: [D]
+            var_loss = torch.mean(F.relu(1 - std))
+
+            z_all_vectors = student_features.flatten(2).permute(0, 2, 1).flatten(0, 1) # [B*H*W, D]
+            N_vectors = z_all_vectors.shape[0] # N_vectors = B * H * W
+
+            z_centered = z_all_vectors - z_all_vectors.mean(dim=0) # Shape: [N_vectors, D]
+            
+            cov = (z_centered.T @ z_centered) / (N_vectors - 1) # Shape: [D, D]
+            
+            cov_loss = cov.fill_diagonal_(0).pow(2).sum() / D
 
         student_features_pos = student_features + self.pos_encoding
         teacher_features_pos = teacher_features + self.pos_encoding
+        
+        student_seq_all_batch = student_features_pos.flatten(2).permute(0, 2, 1)
+        teacher_seq_all_batch = teacher_features_pos.flatten(2).permute(0, 2, 1)
+        
+        pos_encoding_flat = self.pos_encoding.flatten(2).permute(0, 2, 1).squeeze(0)
 
-        student_seq = student_features_pos.flatten(2).permute(0, 2, 1)
-        teacher_seq = teacher_features_pos.flatten(2).permute(0, 2, 1)
+        total_loss = 0.0
         
-        pos_encoding_flat = self.pos_encoding.flatten(2).permute(0, 2, 1)
+        for b in range(B):
+            student_seq_all = student_seq_all_batch[b]
+            teacher_seq_all = teacher_seq_all_batch[b]
+            ctx_mask_b = mask_ctx_1d[b]
+            tgt_mask_b = mask_tgt_1d[b]
 
-        idx_target_expanded = idx_target.unsqueeze(-1).expand(-1, -1, D)
-        
-        target_tokens = teacher_seq.gather(dim=1, index=idx_target_expanded).detach()
+            context_tokens = student_seq_all[ctx_mask_b] 
+            target_tokens = teacher_seq_all[tgt_mask_b].detach() 
+            
+            if target_tokens.shape[0] == 0 or context_tokens.shape[0] == 0:
+                continue
+                
+            context_pos = pos_encoding_flat[ctx_mask_b]
+            target_pos = pos_encoding_flat[tgt_mask_b]
+            
+            query_tokens = self.predictor_queries.expand(target_tokens.shape[0], 1, -1).squeeze(1)
+            
+            memory_with_pos = context_tokens + context_pos
+            queries_with_pos = query_tokens + target_pos
 
-        idx_context_expanded = idx_context.unsqueeze(-1).expand(-1, -1, D)
-        context_tokens = student_seq.gather(dim=1, index=idx_context_expanded)
-        query_tokens = self.predictor_queries.expand(B, N_tgt, -1)
+            predictions = self.predictor(
+                tgt=queries_with_pos.unsqueeze(0),
+                memory=memory_with_pos.unsqueeze(0)
+            ).squeeze(0) 
+            
+            loss_b = F.mse_loss(predictions, target_tokens)
+            total_loss += loss_b
         
-        query_pos = pos_encoding_flat.expand(B, -1, -1).gather(dim=1, index=idx_target_expanded)
-        
-        queries_with_pos = query_tokens + query_pos
+        if B > 0:
+            mse_loss = total_loss / B
+        else:
+            mse_loss = torch.tensor(0.0, device=student_features.device)
 
-        predictions = self.predictor(
-            tgt=queries_with_pos,
-            memory=context_tokens
-        )
-        loss = self.loss_fn(predictions, target_tokens)
-        
-        return loss
+        final_loss = self.i * mse_loss + self.v * var_loss + self.c * cov_loss
+
+        return {
+            "loss": final_loss,
+            "mse_loss": mse_loss.detach(),
+            "var_loss": var_loss.detach(),
+            "cov_loss": cov_loss.detach()
+        }
 
 
 @torch.no_grad()

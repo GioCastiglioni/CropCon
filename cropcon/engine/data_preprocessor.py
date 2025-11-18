@@ -403,6 +403,104 @@ class NormalizeMinMax(BasePreprocessor):
 
         return meta
 
+class RandomCropNoTarget(BasePreprocessor):
+    def __init__(
+        self, pad_if_needed: bool = False, **meta
+    ) -> None:
+        """Initialize the RandomCrop preprocessor that does not affect targets.
+        Args:
+            size (int): crop size.
+            pad_if_needed (bool, optional): whether to pad. Defaults to False.
+            meta: statistics/info of the input data and target encoder
+                data_mean: global mean value of incoming data for potential padding
+                ignore_index: ignore index for potential padding
+        """
+        super().__init__()
+
+        size = meta["encoder_input_size"]
+
+        self.size = tuple(
+            _setup_size(
+                size, error_msg="Please provide only two dimensions (h, w) for size."
+            )
+        )
+        self.pad_if_needed = pad_if_needed
+        self.pad_value = meta["data_mean"]
+        self.ignore_index = meta["ignore_index"]
+
+    def get_params(self, data: dict) -> Tuple[int, int, int, int]:
+        """Get parameters for ``crop`` for a random crop.
+
+        Args:
+            data (dict): input data.
+
+        Returns:
+            tuple: params (i, j, h, w) to be passed to ``crop`` for random crop.
+        """
+        h, w = data["image"][list(data["image"].keys())[0]].shape[-2:]
+        th, tw = self.size
+        if h < th or w < tw:
+            raise ValueError(
+                f"Required crop size {(th, tw)} is larger than input image size {(h, w)}"
+            )
+
+        if w == tw and h == th:
+            return 0, 0, h, w
+
+        i = torch.randint(0, h - th + 1, size=(1,)).item()
+        j = torch.randint(0, w - tw + 1, size=(1,)).item()
+        return i, j, th, tw
+
+    def check_pad(
+        self,
+        data: dict[str, torch.Tensor | dict[str, torch.Tensor]],
+    ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
+        _, t, height, width = data["image"][list(data["image"].keys())[0]].shape
+
+        if height < self.size[0] or width < self.size[1]:
+            pad_img = max(self.size[0] - height, 0), max(self.size[1] - width, 0)
+            height, width = height + 2 * pad_img[0], width + 2 * pad_img[1]
+            for k, v in data["image"].items():
+                padded_img = (
+                    self.pad_value[k].reshape(-1, 1, 1, 1).repeat(1, t, height, width)
+                )
+                padded_img[:, :, pad_img[0] : -pad_img[0], pad_img[1] : -pad_img[1]] = v
+                data["image"][k] = padded_img
+
+        return data
+
+    def __call__(
+        self, data: dict[str, torch.Tensor | dict[str, torch.Tensor]]
+    ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
+        """Random crop the data.
+        Args:
+            data (dict): input data.
+        Returns:
+            dict[str, torch.Tensor | dict[str, torch.Tensor]]: output dictionary following the format
+            {"image":
+                {
+                encoder_modality_1: torch.Tensor of shape (C T H W) (T=1 if single timeframe),
+                ...
+                encoder_modality_N: torch.Tensor of shape (C T H W) (T=1 if single timeframe),
+                 },
+            "target": torch.Tensor of shape (H W),
+            "metadata": dict}.
+        """
+
+        if self.pad_if_needed:
+            data = self.check_pad(data)
+
+        i, j, h, w = self.get_params(data=data)
+
+        for k, v in data["image"].items():
+            data["image"][k] = TF.crop(v, i, j, h, w)
+
+        return data
+
+    def update_meta(self, meta):
+        """Tracking the meta statistics/info for next processor."""
+        meta["data_img_size"] = self.size[0]
+        return meta
 
 class RandomCrop(BasePreprocessor):
     def __init__(

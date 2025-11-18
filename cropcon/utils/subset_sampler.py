@@ -232,7 +232,7 @@ def get_subset_indices(dataset: GeoFMDataset,
         )
         return indices
     
-    elif task == "segmentation" or task == "change_detection":
+    elif task == "segmentation" or task == "change_detection" or task == "pretraining":
         indices, _ = balance_seg_indices(
             dataset, strategy=strategy, label_fraction=label_fraction, num_bins=num_bins, logger=logger
         )

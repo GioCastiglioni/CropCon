@@ -80,7 +80,7 @@ class UTAE(Decoder):
         #self.out_conv = ConvBlock(nkernels=[self.dec_topology[0]] + [self.dec_topology[0], self.num_classes], padding_mode="reflect")
         self.out_conv = nn.Conv2d(self.dec_topology[0], self.num_classes, kernel_size=1)
 
-    def forward(self, x, batch_positions=None, return_feats=True):
+    def forward(self, x, batch_positions=None, return_feats=False):
         feat_v = self.forward_features(x, batch_positions=batch_positions)
         out = self.out_conv(feat_v)
         if return_feats: return out, feat_v
@@ -117,7 +117,7 @@ class UTAE(Decoder):
         for i in range(len(self.topology) - 1):
             out = self.encoder.down_blocks[i].smart_forward(feature_maps[-1])
             feature_maps.append(out)
-        if T > 1:
+        if T >= 1:
             # TEMPORAL ENCODER
             out, att = self.tmap(
                 feature_maps[-1].permute(0, 2, 1, 3, 4),  # (B, C, T, H, W)

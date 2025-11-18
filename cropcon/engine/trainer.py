@@ -108,7 +108,7 @@ class Trainer:
         for epoch in range(self.start_epoch, self.n_epochs):
             # train the network for one epoch
             if epoch % self.eval_interval == 0:
-                metrics, used_time = self.evaluator(self.model, f"epoch {epoch}", self.criterion)
+                metrics, used_time = self.evaluator(self.model, f"epoch {epoch}")
                 self.training_stats["eval_time"].update(used_time)
                 self.save_best_checkpoint(metrics, epoch)
                 del metrics
@@ -250,15 +250,32 @@ class Trainer:
             resume_path (str | pathlib.Path): path to the checkpoint.
         """
         model_dict = torch.load(resume_path, map_location=self.device, weights_only=False)
+        
+        pretrain_key = "patch_conv.weight"
+
         if "model" in model_dict:
-            self.model.module.load_state_dict(model_dict["model"])
-            self.optimizer.load_state_dict(model_dict["optimizer"])
-            self.lr_scheduler.load_state_dict(model_dict["lr_scheduler"])
-            self.scaler.load_state_dict(model_dict["scaler"])
-            self.start_epoch = model_dict["epoch"] + 1
+            if pretrain_key in model_dict["model"]:
+                self.logger.info(f"Loading pre-trained weights from {resume_path}...")
+                self.model.module.load_state_dict(model_dict["model"], strict=False)
+                self.start_epoch = 0
+                self.logger.info("Pre-trained weights loaded. Starting downstream task from epoch 0.")
+            
+            else:
+                self.logger.info(f"Resuming downstream training from checkpoint {resume_path}...")
+                self.model.module.load_state_dict(model_dict["model"], strict=False)
+                self.optimizer.load_state_dict(model_dict["optimizer"])
+                self.lr_scheduler.load_state_dict(model_dict["lr_scheduler"])
+                self.scaler.load_state_dict(model_dict["scaler"])
+                self.start_epoch = model_dict["epoch"] + 1
+                self.logger.info(f"Resuming from epoch {self.start_epoch}.")
+        
         else:
-            self.model.module.load_state_dict(model_dict)
+            self.logger.info(f"Loading weights-only file from {resume_path}...")
+            model_dict.pop('out_conv.weight', None)
+            model_dict.pop('out_conv.bias', None)
+            self.model.module.load_state_dict(model_dict, strict=False)
             self.start_epoch = 0
+            self.logger.info("Weights loaded. Starting from epoch 0.")
 
         self.logger.info(
             f"Loaded model from {resume_path}. Resume training from epoch {self.start_epoch}"
