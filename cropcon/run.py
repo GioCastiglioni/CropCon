@@ -475,6 +475,8 @@ def main(cfg: DictConfig) -> None:
 
     if not cfg.pretrain:
         if cfg.dataset.support_test:
+            criterion = instantiate(cfg.criterion)
+            criterion = criterion.to(device)
             # Evaluation
             test_preprocessor = instantiate(
                 cfg.preprocessing.test,
@@ -497,7 +499,7 @@ def main(cfg: DictConfig) -> None:
                 collate_fn=collate_fn,
             )
             test_evaluator: Evaluator = instantiate(
-                cfg.task.evaluator, val_loader=test_loader, exp_dir=exp_dir, device=device,
+                cfg.task.evaluator, val_loader=test_loader, criterion=criterion, exp_dir=exp_dir, device=device,
                 dataset_name=cfg.dataset.dataset_name
             )
 
