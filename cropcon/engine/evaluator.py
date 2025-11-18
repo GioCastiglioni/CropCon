@@ -143,14 +143,14 @@ class SegEvaluator(Evaluator):
                 target = target.to(self.device)
                 logits = model(image["v1"], batch_positions=data["metadata"])
                 
+                loss_tensor = self.criterion(logits, target)
+                torch.distributed.all_reduce(loss_tensor, op=torch.distributed.ReduceOp.SUM)
+                total_loss += loss_tensor.item()
+                
                 if logits.shape[1] == 1:
                     pred = (torch.sigmoid(logits) > 0.5).type(torch.int64).squeeze(dim=1)
                 else:
                     pred = torch.argmax(logits, dim=1)
-
-                loss_tensor = self.criterion(pred, target)
-                torch.distributed.all_reduce(loss_tensor, op=torch.distributed.ReduceOp.SUM)
-                total_loss += loss_tensor.item()
 
                 valid_mask = target != self.ignore_index
                 pred, target = pred[valid_mask], target[valid_mask]
