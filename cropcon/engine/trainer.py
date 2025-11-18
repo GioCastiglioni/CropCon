@@ -123,7 +123,7 @@ class Trainer:
             if epoch % self.ckpt_interval == 0 and epoch != self.start_epoch: self.save_model(epoch)
             torch.cuda.empty_cache()
 
-        metrics, used_time = self.evaluator(self.model, "final model", self.criterion)
+        metrics, used_time = self.evaluator(self.model, "final model")
         self.training_stats["eval_time"].update(used_time)
         self.save_best_checkpoint(metrics, self.n_epochs)
 
