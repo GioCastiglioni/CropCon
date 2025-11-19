@@ -131,32 +131,71 @@ class Evaluator:
         self.use_wandb = use_wandb
 
         self.class_colors = np.array([
-            [0, 0, 0],         # Background
-            [0, 128, 0],       # Meadow
-            [255, 255, 0],     # Soft Winter Wheat
-            [255, 165, 0],     # Corn
-            [173, 216, 230],   # Winter Barley
-            [255, 0, 255],     # Winter Rapeseed
-            [0, 255, 0],       # Spring Barley
-            [255, 140, 0],     # Sunflower
-            [128, 0, 128],     # Grapevine
-            [255, 0, 0],       # Beet
-            [192, 192, 192],   # Winter Triticale
-            [0, 255, 255],     # Winter Durum Wheat
-            [255, 20, 147],    # Fruits/Vegetables/Flowers
-            [0, 100, 0],       # Potatoes
-            [138, 43, 226],   # Leguminous Fodder
-            [160, 82, 45],     # Soybeans
-            [255, 222, 173],   # Orchard
-            [0, 0, 139],       # Mixed Cereal
-            [255, 105, 180],   # Sorghum
+            [0, 0, 0],         # Background (Fondo)
+            [0, 150, 0],       # ACELGA (Verde oscuro)
+            [255, 0, 100],     # BETARRAGA (Magenta/Remolacha)
+            [100, 200, 50],    # BROCOLI (Verde claro)
+            [255, 165, 0],     # CEBOLLA (Naranja)
+            [255, 140, 0],     # CEBOLLA TEMPRANA (Naranja oscuro)
+            [170, 0, 170],     # CEBOLLIN (Púrpura)
+            [255, 255, 0],     # CHOCLO (Amarillo brillante)
+            [0, 255, 0],       # CILANTRO (Verde brillante)
+            [200, 200, 200],   # COLIFLOR (Gris claro)
+            [0, 100, 0],       # ESPINACA (Verde muy oscuro)
+            [255, 0, 0],       # FRUTILLA (Rojo puro)
+            [50, 255, 100],    # LECHUGA (Verde pálido)
+            [255, 160, 120],   # MELON (Durazno/Salmón)
+            [139, 69, 19],     # PAPA (Marrón tierra)
+            [255, 69, 0],      # PIMIENTO (Rojo anaranjado)
+            [200, 0, 200],     # POROTO GRANADO (Magenta oscuro)
+            [0, 128, 0],       # POROTO VERDE (Verde medio)
+            [255, 10, 50],     # RADICCIO (Rojo intenso/Carmesí)
+            [255, 192, 203],   # SANDÍA (Rosa claro)
+            [255, 50, 50],     # TOMATE CONSUMO FRESCO (Rojo medio)
+            [200, 0, 0],       # TOMATE INDUSTRIAL (Rojo muy oscuro)
+            [218, 165, 32],    # ZAPALLO GUARDA (Dorado oscuro)
+            [128, 128, 0],     # ZAPALLO ITALIANO (Verde oliva)
+            [255, 99, 71],     # AJI (Rojo coral)
+            [255, 255, 224],   # AJO (Amarillo pálido/Marfil)
+            [255, 175, 0],     # CEBOLLA DE GUARDA (Naranja medio)
+            [255, 153, 51],    # CEBOLLA INTERMEDIA O PASCUALINA (Mandarina)
+            [0, 255, 255],     # PEPINO DE ENSALADA (Cian)
+            [128, 0, 128],     # REPOLLO (Púrpura oscuro)
+            [173, 255, 47]     # ZAPALLO TEMPRANO (Verde Chartreuse)
         ], dtype=np.uint8)
 
         self.class_labels = [
-            "Background", "Meadow", "Soft Winter Wheat", "Corn", "Winter Barley",
-            "Winter Rapeseed", "Spring Barley", "Sunflower", "Grapevine", "Beet",
-            "Winter Triticale", "Winter Durum Wheat", "Fruits/Vegs./Flowers",
-            "Potatoes", "Leguminous Fodder", "Soybeans", "Orchard", "Mixed Cereal", "Sorghum"
+            "Background",
+            "ACELGA",
+            "BETARRAGA",
+            "BROCOLI",
+            "CEBOLLA",
+            "CEBOLLA TEMPRANA",
+            "CEBOLLIN",
+            "CHOCLO",
+            "CILANTRO",
+            "COLIFLOR",
+            "ESPINACA",
+            "FRUTILLA",
+            "LECHUGA",
+            "MELON",
+            "PAPA",
+            "PIMIENTO",
+            "POROTO GRANADO",
+            "POROTO VERDE",
+            "RADICCIO",
+            "SANDÍA",
+            "TOMATE CONSUMO FRESCO",
+            "TOMATE INDUSTRIAL",
+            "ZAPALLO GUARDA",
+            "ZAPALLO ITALIANO",
+            "AJI",
+            "AJO",
+            "CEBOLLA DE GUARDA",
+            "CEBOLLA INTERMEDIA O PASCUALINA",
+            "PEPINO DE ENSALADA",
+            "REPOLLO",
+            "ZAPALLO TEMPRANO"
         ]
 
         priors = torch.tensor(distribution, dtype=torch.float32)
@@ -245,6 +284,7 @@ class SegEvaluator(Evaluator):
         if self.exp_dir is not None:
             vis_save_dir = os.path.join(self.exp_dir, f"{model_name}_visuals")
             os.makedirs(vis_save_dir, exist_ok=True)
+            self.logger.info(f"------------- Saving files to {vis_save_dir} ------------------")
         # --------------------------------------------------
 
         for batch_idx, data in enumerate(tqdm(self.val_loader, desc=tag)):
@@ -279,18 +319,20 @@ class SegEvaluator(Evaluator):
             
             # --- NEW: Save overlay images ---
             # Save only if self.exp_dir is specified and batch size is 1
-            if vis_save_dir is not None and image_tensor.shape[0] == 1 and batch_idx <= 8:
+            if vis_save_dir is not None and image_tensor.shape[0] == 1 and batch_idx <= 200 and batch_idx >= 100:
                 try:
                     # 1. Get RGB image: (1, 10, T, H, W) -> (H, W, 3) np.uint8
                     # Select middle temporal instance
                     mid_temporal_idx = image_tensor.shape[2] // 2 
                     # Select BGR (channels 0,1,2) and reorder to RGB (2,1,0)
-                    rgb_tensor = image_tensor[0, [2, 1, 0], mid_temporal_idx, :, :] # (3, H, W)
+                    rgb_tensor = image_tensor[0, [3,2,1], mid_temporal_idx, :, :] # (3, H, W)
                     # Convert to (H, W, 3) numpy array
                     rgb_np = rgb_tensor.cpu().permute(1, 2, 0).numpy()
                     # Normalize for visualization
                     rgb_np_vis = normalize_for_vis(rgb_np)
                     img_pil = Image.fromarray(rgb_np_vis).convert('RGBA')
+                    original_path = os.path.join(vis_save_dir, f"batch_{batch_idx:04d}_original.png")
+                    img_pil.save(original_path)
 
                     # 2. Get Pred and GT masks: (1, H, W) -> (H, W, 3) np.uint8
                     pred_labels = original_pred[0].cpu().numpy()

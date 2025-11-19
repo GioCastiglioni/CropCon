@@ -136,8 +136,6 @@ def main(cfg: DictConfig) -> None:
                     f"mt{cfg.dataset.multi_temporal}",
                     "ft" if cfg.finetune else "no-ft",
                     str(int(cfg.limited_label_train*100)),
-                    f"alpha{str(cfg.task.trainer.alpha).replace('.', '_')}",
-                    f"tau{str(cfg.task.trainer.tau).replace('.', '_')}",
                     f"fold{cfg.dataset.fold_config}",
                     ],
             )
@@ -163,8 +161,6 @@ def main(cfg: DictConfig) -> None:
                     f"mt{cfg.dataset.multi_temporal}",
                     "ft" if cfg.finetune else "no-ft",
                     str(int(cfg.limited_label_train*100)),
-                    f"alpha{str(cfg.task.trainer.alpha).replace('.', '_')}",
-                    f"tau{str(cfg.task.trainer.tau).replace('.', '_')}",
                     f"fold{cfg.dataset.fold_config}",
                     ],
             )
@@ -201,7 +197,7 @@ def main(cfg: DictConfig) -> None:
             output_device=local_rank,
             find_unused_parameters=cfg.finetune,
         )
-    if cfg.task.trainer.alpha != 0.0 or cfg.pretrain:
+    if cfg.pretrain:
         projector = torch.nn.parallel.DistributedDataParallel(
             ProjectionHead(
                 decoder.module.out_conv.in_channels,
@@ -348,7 +344,7 @@ def main(cfg: DictConfig) -> None:
             {'params': non_encoder_params(decoder.module), 'lr': cfg.optimizer.lr},]
         if cfg.finetune:
             params.append({'params': decoder.module.encoder.parameters(), 'lr': cfg.optimizer.lr * cfg.ft_rate})
-        if cfg.task.trainer.alpha != 0 or cfg.pretrain:
+        if cfg.pretrain:
             params.append({'params': projector.parameters()})
             params.append({'params': aggregator.parameters()})
 
