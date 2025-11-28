@@ -159,7 +159,7 @@ class Trainer:
                     for local_index in local_indexes:
                         local_views.append(self.model.module.encoder.projector(feature_maps[-1][:,local_index,:,:,:]))
                 
-                loss = self.compute_loss(global_views, local_views)
+                loss, inv, sigreg = self.compute_loss(global_views, local_views)
 
                 if loss == 0.0:
                     loss = loss + 0.0 * sum(p.sum() for p in self.model.module.parameters())
@@ -186,6 +186,8 @@ class Trainer:
                 self.wandb.log(
                     {
                         "train_loss": loss.item(),
+                        "train_inv": inv,
+                        "train_sigreg": sigreg,
                         "learning_rate": self.optimizer.param_groups[0]["lr"],
                         "epoch": epoch,
                         **{
@@ -211,6 +213,8 @@ class Trainer:
         self.model.eval()
 
         total_epoch_loss = 0.0
+        total_inv = 0.0
+        total_sigreg = 0.0
         
         end_time = time.time()
         for batch_idx, data in enumerate(self.val_loader):
@@ -229,17 +233,23 @@ class Trainer:
                 global_views = [self.model.module.encoder.projector(out)]
                 local_views = [self.model.module.encoder.projector(feature_maps[-1][:,local_index,:,:,:]) for local_index in local_indexes]
 
-                batch_loss = self.compute_loss(global_views, local_views)
+                batch_loss, inv, sigreg = self.compute_loss(global_views, local_views)
 
             total_epoch_loss += batch_loss.item()
+            total_inv += inv
+            total_sigreg += sigreg
             torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
 
         final_val_loss = total_epoch_loss / len(self.val_loader)
+        final_inv = total_inv / len(self.val_loader)
+        final_sigreg = total_sigreg / len(self.val_loader)
 
         if self.use_wandb and self.rank == 0:
             self.wandb.log(
                 {
                     "val_loss": final_val_loss,
+                    "val_inv": final_inv,
+                    "val_sigreg": final_sigreg,
                     "epoch": epoch
                 },
                 step = epoch * len(self.train_loader)

@@ -732,7 +732,7 @@ class LeJEPA(nn.Module):
         all_views_tensor = torch.stack(all_views_list)
         inv = (global_centroid.unsqueeze(0) - all_views_tensor).square().mean()
         sigreg = torch.stack([self.sigreg(view) for view in all_views_list]).mean()
-        return (1-self.lamb)*inv + self.lamb*sigreg
+        return (1-self.lamb)*inv + self.lamb*sigreg, inv.item(), sigreg.item()
     
     def __str__(self):
         return 'LeJEPA'
