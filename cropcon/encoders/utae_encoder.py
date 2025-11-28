@@ -5,7 +5,7 @@ from typing import Sequence
 import torch
 import torch.nn as nn
 
-from cropcon.encoders.base import Encoder
+from cropcon.encoders.base import Encoder, LTAE2d
 
 
 class UTAE_Encoder(Encoder):
@@ -29,6 +29,7 @@ class UTAE_Encoder(Encoder):
         output_dim: int | list[int],
         download_url: str,
         encoder_weights: str | None = None,
+        projection_dim: int = 512
     ):
         super().__init__(
             model_name="utae_encoder",
@@ -67,8 +68,48 @@ class UTAE_Encoder(Encoder):
             for i in range(len(self.topology) - 1)
         )
 
-    def forward(self, image):
-        pass
+        self.tmap = LTAE2d(
+            in_channels=self.topology[-1],
+            d_model=256,
+            n_head=16,
+            mlp=[256, self.topology[-1]],
+            return_att=True,
+            d_k=4,
+        )
+
+        self.projector = nn.Sequential([
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(1),
+            nn.Linear(self.topology[-1], 2048, bias=False),
+            nn.BatchNorm1d(2048),
+            nn.ReLU(),
+            nn.Linear(2048, 2048, bias=False),
+            nn.BatchNorm1d(2048),
+            nn.ReLU(),
+            nn.Linear(2048, projection_dim)
+        ])
+
+    def forward(self, input, batch_positions=None):
+        input = input.permute(0,2,1,3,4)
+        B, T, C, H, W = input.shape
+
+        pad_mask = (
+            (input == 0).all(dim=-1).all(dim=-1).all(dim=-1)
+        )  # BxT pad mask
+        out = self.in_conv.smart_forward(input)
+        feature_maps = [out]
+        # SPATIAL ENCODER
+        for i in range(len(self.topology) - 1):
+            out = self.encoder.down_blocks[i].smart_forward(feature_maps[-1])
+            feature_maps.append(out)
+
+        out, att = self.tmap(
+            feature_maps[-1].permute(0, 2, 1, 3, 4),  # (B, C, T, H, W)
+            batch_positions=batch_positions.to(out.device),
+            pad_mask=pad_mask
+        )
+
+        return out, feature_maps, pad_mask, att
 
     def load_encoder_weights(self, logger: Logger, from_scratch: bool = True) -> None:
         pass

@@ -6,7 +6,7 @@ from logging import Logger
 import torch
 from torch import nn
 
-from cropcon.encoders.base import Encoder
+from cropcon.encoders.base import Encoder, LTAE2d
 
 from torch.nn import functional as F
 from timm.layers import DropPath
@@ -33,6 +33,7 @@ class ConvNext(Encoder):
         output_dim: int | list[int],
         download_url: str,
         encoder_weights: str | None = None,
+        projection_dim: int = 512
     ):
         super().__init__(
             model_name="ConvNeXtV2",
@@ -80,14 +81,55 @@ class ConvNext(Encoder):
 
         self.norm = nn.LayerNorm(self.topology[-1], eps=1e-6) # final norm layer
 
-    def forward(self, x):
-        down_features = []
+        self.tmap = LTAE2d(
+            in_channels=self.topology[-1],
+            d_model=256,
+            n_head=16,
+            mlp=[256, self.topology[-1]],
+            return_att=True,
+            d_k=4,
+            layer_norm=True
+        )
+
+        self.projector = nn.Sequential([
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(1),
+            nn.Linear(self.topology[-1], 2048),
+            nn.LayerNorm(normalized_shape=2048),
+            nn.GELU(),
+            nn.Linear(2048, 2048),
+            nn.LayerNorm(normalized_shape=2048),
+            nn.GELU(),
+            nn.Linear(2048, projection_dim)
+        ])
+
+    def forward(self, input, batch_positions=None):
+        input = input.permute(0, 2, 1, 3, 4)  # (B, T, C, H, W)
+        B, T, C, H, W = input.shape
+
+        pad_mask = (
+            (input == 0).all(dim=-1).all(dim=-1).all(dim=-1)
+        )  # (B, T) pad mask
+
+        x = input.reshape(B * T, C, H, W)
+
+        feature_maps = []
         for i in range(self.num_stage):
             x = self.downsample_layers[i](x)
             x = self.stages[i](x)
-            down_features.append(x)
+            feature_maps.append(x)
+        
+        feature_maps = [
+            fm.reshape(B, T, -1, fm.shape[-2], fm.shape[-1]) for fm in feature_maps
+        ]
 
-        return down_features
+        out, att = self.tmap(
+            feature_maps[-1].permute(0, 2, 1, 3, 4),        # (B, C, T, H, W)
+            batch_positions=batch_positions.to(x.device),
+            pad_mask=pad_mask,
+        )
+
+        return out, feature_maps, pad_mask, att
 
     def load_encoder_weights(self, logger: Logger, from_scratch: bool = True) -> None:
         pass
