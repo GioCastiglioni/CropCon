@@ -61,6 +61,7 @@ class ConvNext(Decoder):
             mlp=[256, self.topology[-1]],
             return_att=True,
             d_k=4,
+            layer_norm=True
         )
         self.temporal_aggregator = Temporal_Aggregator(mode="att_group")
 
@@ -70,7 +71,7 @@ class ConvNext(Decoder):
         if return_feats: return out, feat_v
         else: return out
 
-    def forward_features(self, input: torch.Tensor, batch_positions=None) -> torch.Tensor:
+    def forward_bottleneck(self, input: torch.Tensor, batch_positions=None) -> torch.Tensor:
         input = input.permute(0, 2, 1, 3, 4)  # (B, T, C, H, W)
         B, T, C, H, W = input.shape
 
@@ -94,8 +95,15 @@ class ConvNext(Decoder):
             use_temporal_aggregation = True
         else:
             out = feature_maps[-1].squeeze(1)  # (B, C, H, W)
+            x_in = feature_maps[-1].permute(0, 2, 1, 3, 4)
             att = None
             use_temporal_aggregation = False
+
+        return out, x_in, feature_maps, use_temporal_aggregation, pad_mask, att
+
+    def forward_features(self, input: torch.Tensor, batch_positions=None):
+
+        out, _, feature_maps, use_temporal_aggregation, pad_mask, att = self.forward_bottleneck(input, batch_positions)
 
         # Construct skip connections (deepest → shallowest)
         skips = []
