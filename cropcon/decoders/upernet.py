@@ -134,7 +134,6 @@ class SegUPerNet(Decoder):
         )
 
         self.conv_seg = nn.Conv2d(self.channels, self.num_classes, kernel_size=1)
-        self.dropout = nn.Dropout2d(0.0)
 
     def psp_forward(self, inputs):
         """Forward function of PSP module."""
@@ -233,7 +232,6 @@ class SegUPerNet(Decoder):
         else: x = {'optical': x}
 
         feat = self.forward_fmaps(x)
-        feat = self.dropout(feat)
         
         output_shape = x[list(x.keys())[0]].shape[-2:]
 
@@ -292,45 +290,22 @@ class SegMTUPerNet(SegUPerNet):
         self.multi_temporal = multi_temporal
         self.multi_temporal_strategy = multi_temporal_strategy
 
-        # if the encoder deals with multi_temporal inputs and
-        # returns time merged outputs then we don't need multi_temporal_strategy
-        if self.encoder.multi_temporal and not self.encoder.multi_temporal_output:
-            self.tmap = None
-
+        if decoder_in_channels != encoder.output_dim:
+            self.ltae_adaptor = LTAEChannelAdaptor(
+                in_channels=encoder.output_dim,
+                out_channels=decoder_in_channels,
+            )
         else:
-            if self.multi_temporal_strategy == "ltae":
-                ltae_in_channels = max(decoder_in_channels)
-                # if the encoder output channels vary we must use an adaptor before the LTAE
-                if decoder_in_channels != encoder.output_dim:
-                    self.ltae_adaptor = LTAEChannelAdaptor(
-                        in_channels=encoder.output_dim,
-                        out_channels=decoder_in_channels,
-                    )
-                else:
-                    self.ltae_adaptor = lambda x: x
-                self.tmap = LTAE2d(
-                    positional_encoding=True,
-                    in_channels=ltae_in_channels,
-                    mlp=[ltae_in_channels, ltae_in_channels],
-                    d_model=ltae_in_channels,
-                )
-            elif self.multi_temporal_strategy == "linear":
-                self.tmap = nn.Linear(self.multi_temporal, 1)
-            else:
-                self.tmap = None
+            self.ltae_adaptor = lambda x: x
 
-    def get_decoder_in_channels(
-        self, multi_temporal_strategy: str | None, encoder: Encoder
-    ) -> list[int]:
-        if multi_temporal_strategy == "ltae":
-            # if the encoder output channels vary we must use an adaptor before the LTAE
-            ltae_in_channels = max(encoder.output_dim)
-            if ltae_in_channels != min(encoder.output_dim):
-                return [ltae_in_channels for _ in encoder.output_dim]
+    def get_decoder_in_channels(self, encoder: Encoder) -> list[int]:
+        ltae_in_channels = max(encoder.output_dim)
+        if ltae_in_channels != min(encoder.output_dim):
+            return [ltae_in_channels for _ in encoder.output_dim]
         return encoder.output_dim
 
     def forward_features(
-        self, img: dict[str, torch.Tensor], batch_positions=None, output_shape: torch.Size | None = None, return_feats=False
+        self, img: dict[str, torch.Tensor], batch_positions=None, output_shape: torch.Size | None = None
     ) -> torch.Tensor:
         """Compute the segmentation output for multi-temporal data.
 
@@ -349,33 +324,15 @@ class SegMTUPerNet(SegUPerNet):
         else: img = {'optical': img}
 
         # If the encoder handles multi_temporal we feed it with the input
-        if self.encoder.multi_temporal:
-            if not self.finetune:
-                with torch.no_grad():
-                    feats = self.encoder(img)
-            else:
-                feats = self.encoder(img)
+        if not self.finetune:
+            with torch.no_grad():
+                _, feat, _, _ = self.encoder(img, batch_positions)
+        else:
+            _, feat, _, _ = self.encoder(img, batch_positions)
             # multi_temporal models can return either (B C' T H' W')
             # or (B C' H' W') via internal merging strategy
 
-        # If the encoder handles only single temporal data, we apply multi_temporal_strategy
-        else:
-            sizes = {k: v.shape for k, v in img.items()}
-            img = {k: v.permute(0,2,1,3,4).reshape(sizes[k][0]*sizes[k][2],sizes[k][1],sizes[k][3],sizes[k][4]) for k,v in img.items()}
-            if not self.finetune:
-                with torch.no_grad():
-                    feats = self.encoder(img)
-            else: feats = self.encoder(img)
-            feats = [feat.reshape(sizes["optical"][0],sizes["optical"][2],*feat.shape[1:]).permute(0,2,1,3,4) for feat in feats]
-
-        if self.tmap is not None:
-            if self.multi_temporal_strategy == "ltae":
-                feats = self.ltae_adaptor(feats)
-                feats = [self.tmap(f, batch_positions=batch_positions) for f in feats]
-            elif self.multi_temporal_strategy == "linear":
-                feats = [self.tmap(f.permute(0, 1, 3, 4, 2)).squeeze(-1) for f in feats]
-
-        feat = self.neck(feats)
+        feat = self.neck(feat)
         feat = self._forward_feature(feat)
 
         if output_shape is None:
@@ -394,9 +351,7 @@ class SegMTUPerNet(SegUPerNet):
         if type(img) is dict: pass
         else: img = {'optical': img}
 
-        feat = self.forward_features(img, batch_positions, output_shape, return_feats)
-        feat = self.dropout(feat)
-
+        feat = self.forward_features(img, batch_positions, output_shape)
         output = self.conv_seg(feat)
 
         return output
