@@ -13,12 +13,10 @@ import torchvision.transforms.v2 as T
 
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 
 from cropcon.utils.logger import RunningAverageMeter, sec_to_hm
-from cropcon.utils.losses import CropConLoss
-from cropcon.utils.utils import RandomChannelDropout, ConsistentTransform
-from scipy.ndimage import label as lbl
+from cropcon.utils.utils import ConsistentTransform
 
 class Trainer:
     def __init__(
@@ -97,6 +95,8 @@ class Trainer:
 
         self.start_epoch = 0
 
+        self.transform = ConsistentTransform(h_w=self.model.module.encoder.input_size, degrees=45).to(self.device)
+
         if self.use_wandb:
             import wandb
 
@@ -141,6 +141,7 @@ class Trainer:
             epoch (int): number of the epoch.
         """
         self.model.train()
+        self.criterion.train()
 
         end_time = time.time()
         for batch_idx, data in enumerate(self.train_loader):
@@ -152,13 +153,38 @@ class Trainer:
             self.training_stats["data_time"].update(time.time() - end_time)
 
             with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
-                if str(self.criterion) == "PrototypeBasedSemSegLoss": 
-                    logits = self.model.module.forward_features(image, batch_positions=data["metadata"])
+                valid_pixels = (target != self.criterion.ignore_index)
+                
+                if str(self.criterion) != "BalancedContrastiveLearning":
+                    if str(self.criterion) == "PrototypeBasedSemSegLoss": 
+                        logits = self.model.module.forward_features(image, batch_positions=data["metadata"])
+                    else: 
+                        logits = self.model(image, batch_positions=data["metadata"])
+                    if valid_pixels.any(): loss = self.compute_loss(logits, target)
+                    else: loss = logits.sum() * 0.0
+
                 else: 
                     logits = self.model(image, batch_positions=data["metadata"])
-                valid_pixels = (target != self.criterion.ignore_index)
-                if valid_pixels.any(): loss = self.compute_loss(logits, target)
-                else: loss = logits.sum() * 0.0
+
+                    with torch.no_grad():
+                        image2, target2 = self.temporal_transform(image, target)
+                        image3, target3 = self.temporal_transform(image, target)
+
+                    prototypes = self.model.module.out_conv.weight
+
+                    z2 = self.model.module.forward_features(image2.requires_grad_(True), batch_positions=data["metadata"])
+                    z3 = self.model.module.forward_features(image3.requires_grad_(True), batch_positions=data["metadata"])
+
+                    loss = self.criterion(
+                        logits,
+                        z2,
+                        z3,
+                        target,
+                        target2,
+                        target3,
+                        prototypes
+                    )
+                
                 
             self.optimizer.zero_grad()
 
@@ -195,7 +221,42 @@ class Trainer:
 
             self.training_stats["batch_time"].update(time.time() - end_time)
             end_time = time.time()
+            torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
         return 
+    
+    def temporal_transform(self, x: torch.Tensor, mask: torch.Tensor):
+        """
+        x:    [B, C, T, H, W]
+        mask: [B, H, W]
+        
+        Returns:
+            x_out:    [B, C, T, H_new, W_new]
+            mask_out: [B, H_new, W_new]
+        """
+        B, C, Temp, H, W = x.shape
+
+        x = x.permute(0, 2, 1, 3, 4)
+
+        out_imgs = []
+        out_masks = []
+
+        for b in range(B):
+            x_seq = x[b] 
+            
+            m_map = mask[b]
+
+            sample = self.transform({"image": x_seq, "mask": m_map})
+
+            img_transformed = sample["image"].permute(1, 0, 2, 3)
+            mask_transformed = sample["mask"]
+
+            out_imgs.append(img_transformed)
+            out_masks.append(mask_transformed)
+
+        x_out = torch.stack(out_imgs)
+        mask_out = torch.stack(out_masks)
+
+        return x_out, mask_out
 
     def get_checkpoint(self, epoch: int) -> dict[str, dict | int]:
         """Create a checkpoint dictionary, containing references to the pytorch tensors.
