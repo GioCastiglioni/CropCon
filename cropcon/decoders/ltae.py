@@ -120,6 +120,7 @@ class LTAE2d(nn.Module):
         T=1000,
         return_att=False,
         positional_encoding=True,
+        layer_norm=False,
     ):
         """
         Lightweight Temporal Attention Encoder (L-TAE) for image time series.
@@ -171,14 +172,24 @@ class LTAE2d(nn.Module):
         )
 
         layers = []
+        
         for i in range(len(self.mlp) - 1):
-            layers.extend(
-                [
-                    nn.Linear(self.mlp[i], self.mlp[i + 1]),
-                    nn.BatchNorm1d(self.mlp[i + 1]),
-                    nn.ReLU(),
-                ]
-            )
+            if not layer_norm:
+                layers.extend(
+                    [
+                        nn.Linear(self.mlp[i], self.mlp[i + 1]),
+                        nn.BatchNorm1d(self.mlp[i + 1]),
+                        nn.ReLU(),
+                    ]
+                )
+            else:
+                layers.extend(
+                    [
+                        nn.Linear(self.mlp[i], self.mlp[i + 1]),
+                        nn.LayerNorm(normalized_shape=self.mlp[i + 1]),
+                        nn.GELU(),
+                    ]
+                )
 
         self.mlp = nn.Sequential(*layers)
         self.dropout = nn.Dropout(dropout)
