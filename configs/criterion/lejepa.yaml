@@ -1,0 +1,4 @@
+_target_: cropcon.utils.losses.LeJEPA
+num_slices: 2048
+lamb: 0.05
+knots: 17
