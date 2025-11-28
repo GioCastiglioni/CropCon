@@ -47,6 +47,7 @@ class SegUPerNet(Decoder):
 
         self.input_layers = self.encoder.output_layers
         self.input_layers_num = len(self.input_layers)
+        self.topology = self.encoder.topology
 
         if in_channels is None:
             self.in_channels = [
@@ -159,9 +160,9 @@ class SegUPerNet(Decoder):
         # inputs = self._transform_inputs(inputs)
 
         # build laterals
-        laterals = [
-            lateral_conv(inputs[i]) for i, lateral_conv in enumerate(self.lateral_convs)
-        ]
+        laterals=[]
+        for i, lateral_conv in enumerate(self.lateral_convs):
+            laterals.append(lateral_conv(inputs[i]))
 
         laterals.append(self.psp_forward(inputs))
 
@@ -274,9 +275,6 @@ class SegMTUPerNet(SegUPerNet):
         pool_scales: list[int] = [1, 2, 3, 6],
         feature_multiplier: int = 1,
     ) -> None:
-        decoder_in_channels = self.get_decoder_in_channels(
-            multi_temporal_strategy, encoder
-        )
         super().__init__(
             encoder=encoder,
             num_classes=num_classes,
@@ -284,25 +282,16 @@ class SegMTUPerNet(SegUPerNet):
             channels=channels,
             pool_scales=pool_scales,
             feature_multiplier=feature_multiplier,
-            in_channels=decoder_in_channels,
+            in_channels=encoder.topology,
         )
 
         self.multi_temporal = multi_temporal
         self.multi_temporal_strategy = multi_temporal_strategy
 
-        if decoder_in_channels != encoder.output_dim:
-            self.ltae_adaptor = LTAEChannelAdaptor(
+        self.ltae_adaptor = LTAEChannelAdaptor(
                 in_channels=encoder.output_dim,
-                out_channels=decoder_in_channels,
+                out_channels=[channels for _ in encoder.output_dim],
             )
-        else:
-            self.ltae_adaptor = lambda x: x
-
-    def get_decoder_in_channels(self, encoder: Encoder) -> list[int]:
-        ltae_in_channels = max(encoder.output_dim)
-        if ltae_in_channels != min(encoder.output_dim):
-            return [ltae_in_channels for _ in encoder.output_dim]
-        return encoder.output_dim
 
     def forward_features(
         self, img: dict[str, torch.Tensor], batch_positions=None, output_shape: torch.Size | None = None
@@ -320,23 +309,23 @@ class SegMTUPerNet(SegUPerNet):
         Returns:
             torch.Tensor: output tensor of shape (B, num_classes, H', W') with (H' W') coressponding to the output_shape.
         """
-        if type(img) is dict: pass
-        else: img = {'optical': img}
+        if type(img) is dict: img=img["optical"]
+        else: pass
 
         # If the encoder handles multi_temporal we feed it with the input
         if not self.finetune:
             with torch.no_grad():
-                _, feat, _, _ = self.encoder(img, batch_positions)
+                _, feat, _, att = self.encoder(img, batch_positions)
+                feat = self.collapse_T(feat, att)
         else:
-            _, feat, _, _ = self.encoder(img, batch_positions)
-            # multi_temporal models can return either (B C' T H' W')
-            # or (B C' H' W') via internal merging strategy
+            _, feat, _, att = self.encoder(img, batch_positions)
+            feat = self.collapse_T(feat, att)
 
         feat = self.neck(feat)
         feat = self._forward_feature(feat)
 
         if output_shape is None:
-            output_shape = img[list(img.keys())[0]].shape[-2:]
+            output_shape = img.shape[-2:]
 
         # interpolate to the target spatial dims
         feat = F.interpolate(feat, size=output_shape, mode="bilinear")
@@ -355,6 +344,49 @@ class SegMTUPerNet(SegUPerNet):
         output = self.conv_seg(feat)
 
         return output
+
+    def collapse_T(self, feature_maps, att):
+        """
+        Colapsa la dimensión temporal T usando la atención del L-TAE.
+        Divide los canales de los feature maps entre las cabezas de atención.
+        
+        Args:
+            feature_maps: Lista de tensores (B, T, C, H_fm, W_fm)
+            att: Tensor de atención (Heads, B, T, H_last, W_last) -> Output del LTAE
+        """
+        n_heads = att.shape[0]
+        collapsed_maps = []
+        
+        for fm in feature_maps:
+            # fm: (B, T, C, H, W)
+            B, T, C, H_fm, W_fm = fm.shape
+            H_att, W_att = att.shape[-2], att.shape[-1]
+            
+            if (H_fm, W_fm) != (H_att, W_att):
+                att_resized = att.view(-1, 1, H_att, W_att)
+                att_resized = F.interpolate(att_resized, size=(H_fm, W_fm), mode='bilinear', align_corners=False)
+                att_spatial = att_resized.view(n_heads, B, T, 1, H_fm, W_fm)
+            else:
+                att_spatial = att.unsqueeze(3) # (Heads, B, T, 1, H, W)
+
+            if C % n_heads == 0:
+                c_per_head = C // n_heads
+                
+                fm_split = fm.view(B, T, n_heads, c_per_head, H_fm, W_fm)
+                fm_split = fm_split.permute(2, 0, 1, 3, 4, 5)
+                
+                weighted = fm_split * att_spatial 
+                
+                collapsed = weighted.sum(dim=2)
+                collapsed_fm = collapsed.permute(1, 0, 2, 3, 4).reshape(B, C, H_fm, W_fm)
+                
+            else:
+                att_avg = att_spatial.mean(dim=0) # (B, T, 1, H, W)
+                collapsed_fm = (fm * att_avg).sum(dim=1)
+
+            collapsed_maps.append(collapsed_fm)
+            
+        return collapsed_maps
     
     
 
@@ -463,4 +495,4 @@ class Feature2Pyramid(nn.Module):
 
         for i in range(len(inputs)):
             outputs.append(self.ops[i](inputs[i]))
-        return tuple(outputs)
+        return outputs

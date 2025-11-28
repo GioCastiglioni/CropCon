@@ -135,6 +135,9 @@ class JepaLoss(nn.Module):
             "var_loss": var_loss.detach(),
             "cov_loss": cov_loss.detach()
         }
+        
+    def __str__(self):
+        return "JEPALoss"
 
 
 @torch.no_grad()

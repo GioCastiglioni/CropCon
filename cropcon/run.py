@@ -190,107 +190,8 @@ def main(cfg: DictConfig) -> None:
             cfg.decoder,
             encoder=encoder,
         )
-    if cfg.pretrain: 
-        decoder.patch_conv = nn.Sequential(
-            nn.Conv2d(
-                decoder.topology[0], 
-                cfg.projection_dim*2, 
-                kernel_size=encoder.input_size // cfg.criterion.grid_size, 
-                stride=encoder.input_size // cfg.criterion.grid_size
-            ),
-            
-            nn.GroupNorm(1, cfg.projection_dim*2),
-            nn.GELU(),
-            nn.Conv2d(
-                cfg.projection_dim*2, 
-                cfg.projection_dim, 
-                kernel_size=1, 
-                stride=1
-            )
-        )
-        nn.init.kaiming_normal_(
-            decoder.patch_conv[0].weight, 
-            mode='fan_in', 
-            nonlinearity='relu'
-        )
-        if decoder.patch_conv[0].bias is not None:
-            nn.init.constant_(decoder.patch_conv[0].bias, 0)
-        nn.init.constant_(decoder.patch_conv[1].weight, 1)
-        nn.init.constant_(decoder.patch_conv[1].bias, 0)
-        nn.init.kaiming_normal_(
-            decoder.patch_conv[3].weight, 
-            mode='fan_in', 
-            nonlinearity='linear'
-        )
-        if decoder.patch_conv[3].bias is not None:
-            nn.init.constant_(decoder.patch_conv[3].bias, 0)
-        decoder.criterion = instantiate(cfg.criterion)
-
-        mask_tensor = torch.zeros(
-            1, 
-            len(encoder.input_bands), 
-            encoder.input_size, 
-            encoder.input_size, 
-            device=device
-        )
-        nn.init.kaiming_normal_(mask_tensor, mode='fan_in', nonlinearity='relu')
-        decoder.mask_token = nn.Parameter(mask_tensor)
 
     decoder.to(device)
-
-    if cfg.pretrain:
-        encoder_teacher: Encoder = instantiate(cfg.encoder)
-        teacher: Decoder = instantiate(cfg.decoder, encoder=encoder_teacher)
-        teacher.patch_conv = nn.Sequential(
-            nn.Conv2d(
-                teacher.topology[0], 
-                cfg.projection_dim*2, 
-                kernel_size=encoder.input_size // cfg.criterion.grid_size, 
-                stride=encoder.input_size // cfg.criterion.grid_size
-            ),
-            nn.GroupNorm(1, cfg.projection_dim*2),
-            nn.GELU(),
-            nn.Conv2d(
-                cfg.projection_dim*2, 
-                cfg.projection_dim, 
-                kernel_size=1, 
-                stride=1
-            )
-        )
-        nn.init.kaiming_normal_(
-            teacher.patch_conv[0].weight, 
-            mode='fan_in', 
-            nonlinearity='relu'
-        )
-        if teacher.patch_conv[0].bias is not None:
-            nn.init.constant_(teacher.patch_conv[0].bias, 0)
-        nn.init.constant_(teacher.patch_conv[1].weight, 1)
-        nn.init.constant_(teacher.patch_conv[1].bias, 0)
-        nn.init.kaiming_normal_(
-            teacher.patch_conv[3].weight, 
-            mode='fan_in', 
-            nonlinearity='linear'
-        )
-        if teacher.patch_conv[3].bias is not None:
-            nn.init.constant_(teacher.patch_conv[3].bias, 0)
-        teacher.criterion = instantiate(cfg.criterion)
-        mask_tensor_teacher = torch.zeros(
-            1, 
-            len(encoder_teacher.input_bands), 
-            encoder_teacher.input_size, 
-            encoder_teacher.input_size, 
-            device=device
-        )
-        nn.init.kaiming_normal_(mask_tensor_teacher, mode='fan_in', nonlinearity='relu')
-        teacher.mask_token = nn.Parameter(mask_tensor_teacher)
-        teacher.to(device)
-        teacher.load_state_dict(decoder.state_dict())
-        teacher = torch.nn.parallel.DistributedDataParallel(
-                teacher,
-                device_ids=[local_rank],
-                output_device=local_rank,
-                find_unused_parameters=cfg.finetune,
-            )
 
     logger.info(
             "Built {} for {} encoder.".format(
@@ -301,9 +202,9 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Total parameters: {sum(p.numel() for p in decoder.parameters())}")
 
     def params_extractor(model: nn.Module, encoder=False) -> iter:
-        condition = (("encoder" in name) or ("tmap" in name))
-        condition = condition if encoder else not condition
         for name, param in model.named_parameters():
+            condition = ("encoder" in name)
+            condition = condition if encoder else not condition
             if condition:
                 yield param
 
@@ -409,7 +310,7 @@ def main(cfg: DictConfig) -> None:
             collate_fn=collate_fn,
         )
 
-        if not cfg.pretrain:
+        if not cfg.criterion._target_ == 'cropcon.utils.losses.JepaLoss':
             criterion = instantiate(cfg.criterion)
             criterion = criterion.to(device)
             if str(criterion) == "BalancedContrastiveLearning":
@@ -492,7 +393,6 @@ def main(cfg: DictConfig) -> None:
             trainer: Trainer = instantiate(
                         cfg.task.trainer,
                         model=decoder,
-                        teacher=teacher,
                         train_loader=train_loader,
                         val_loader=val_loader,
                         lr_scheduler=lr_scheduler,

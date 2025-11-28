@@ -90,21 +90,15 @@ class LTAEChannelAdaptor(nn.Module):
         """Adapter for the number of channels of the input features.
 
         Args:
-            features (list[torch.Tensor]): list of features of shape (B C T H W)
+            features (list[torch.Tensor]): list of features of shape (B C H W)
             from different layers of the encoder.
 
         Returns:
-            list[torch.Tensor]: list of adapted features of shape (B C' T H W)
+            list[torch.Tensor]: list of adapted features of shape (B C' H W)
         """
         output = []
         for c, f in zip(self.convs, features):
-            # for all frames
-            adapted_feature = []
-            # features of shape (B C T H W)
-            for t in range(f.shape[-3]):
-                adapted_feature.append(c(f[..., t, :, :]))
-
-            output.append(torch.stack(adapted_feature, -3))
+            output.append(c(f))
         return output
 
 

@@ -2,7 +2,6 @@ trainer:
   _target_: cropcon.engine.pretrainer.Trainer
   # params overwritten in run
   model: null
-  teacher: null
   train_loader: null
   optimizer: null
   lr_scheduler: null

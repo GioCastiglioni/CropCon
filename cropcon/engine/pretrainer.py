@@ -18,7 +18,6 @@ class Trainer:
     def __init__(
         self,
         model: nn.Module,
-        teacher: nn.Module,
         train_loader: DataLoader,
         val_loader: DataLoader,
         criterion: nn.Module,
@@ -53,8 +52,6 @@ class Trainer:
         self.rank = int(os.environ["RANK"])
         self.criterion = criterion
         self.model = model
-        self.teacher = teacher
-        self.teacher.eval()
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.batch_per_epoch = len(self.train_loader)
@@ -228,10 +225,9 @@ class Trainer:
             ):
 
                 local_indexes = torch.linspace(0, T-1, self.n_local//self.n_global).long()
-
                 out, feature_maps, _, _ = self.model.module.encoder(image, batch_positions=data["metadata"])
                 global_views = [self.model.module.encoder.projector(out)]
-                local_views = [self.model.module.encoder.projector(feature_maps[0][:,local_index,:,:,:]) for local_index in local_indexes]
+                local_views = [self.model.module.encoder.projector(feature_maps[-1][:,local_index,:,:,:]) for local_index in local_indexes]
 
                 batch_loss = self.compute_loss(global_views, local_views)
 
@@ -359,9 +355,9 @@ class Trainer:
                 epoch, is_best=True, checkpoint=best_ckpt
             )
 
-    def compute_loss(self, feat_v1: torch.Tensor, feat_v2: torch.Tensor, idx1: torch.Tensor, idx2: torch.Tensor) -> torch.Tensor:
+    def compute_loss(self, global_views: torch.Tensor, local_views: torch.Tensor) -> torch.Tensor:
         """Compute the loss"""
-        return self.criterion(feat_v1, feat_v2, idx1, idx2)
+        return self.criterion(global_views, local_views)
 
     def log(self, batch_idx: int, epoch) -> None:
         """Log the information.

@@ -6,7 +6,8 @@ from logging import Logger
 import torch
 from torch import nn
 
-from cropcon.encoders.base import Encoder, LTAE2d
+from cropcon.encoders.base import Encoder
+from cropcon.encoders.ltae import LTAE2d
 
 from torch.nn import functional as F
 from timm.layers import DropPath
@@ -52,6 +53,7 @@ class ConvNext(Encoder):
         self.num_stage = len(self.depths)
         self.in_channels = len(input_bands["optical"])
         self.topology = topology
+        self.output_layers = self.topology
         drop_path_rate = 0.
 
         self.downsample_layers = nn.ModuleList() # stem and 3 intermediate downsampling conv layers
@@ -90,8 +92,7 @@ class ConvNext(Encoder):
             d_k=4,
             layer_norm=True
         )
-
-        self.projector = nn.Sequential([
+        self.projector = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(1),
             nn.Linear(self.topology[-1], 2048),
@@ -101,7 +102,7 @@ class ConvNext(Encoder):
             nn.LayerNorm(normalized_shape=2048),
             nn.GELU(),
             nn.Linear(2048, projection_dim)
-        ])
+        )
 
     def forward(self, input, batch_positions=None):
         input = input.permute(0, 2, 1, 3, 4)  # (B, T, C, H, W)

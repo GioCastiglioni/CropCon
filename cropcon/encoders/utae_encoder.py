@@ -5,8 +5,8 @@ from typing import Sequence
 import torch
 import torch.nn as nn
 
-from cropcon.encoders.base import Encoder, LTAE2d
-
+from cropcon.encoders.base import Encoder
+from cropcon.encoders.ltae import LTAE2d
 
 class UTAE_Encoder(Encoder):
     """
@@ -77,7 +77,7 @@ class UTAE_Encoder(Encoder):
             d_k=4,
         )
 
-        self.projector = nn.Sequential([
+        self.projector = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(1),
             nn.Linear(self.topology[-1], 2048, bias=False),
@@ -87,7 +87,7 @@ class UTAE_Encoder(Encoder):
             nn.BatchNorm1d(2048),
             nn.ReLU(),
             nn.Linear(2048, projection_dim)
-        ])
+        )
 
     def forward(self, input, batch_positions=None):
         input = input.permute(0,2,1,3,4)
