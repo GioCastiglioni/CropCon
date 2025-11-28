@@ -12,7 +12,7 @@ from torch.optim.optimizer import Optimizer
 from torch.utils.data import DataLoader
 
 from cropcon.utils.logger import RunningAverageMeter, sec_to_hm
-from cropcon.utils.utils import ConsistentTransform
+from cropcon.utils.utils import LeJEPATransform as ConsistentTransform
 
 class Trainer:
     def __init__(
@@ -95,7 +95,7 @@ class Trainer:
 
             self.wandb = wandb
         
-        self.transform = ConsistentTransform(h_w=self.model.module.encoder.input_size, degrees=45, view=1).to(self.device)
+        self.transform = ConsistentTransform(h_w=self.model.module.encoder.input_size, degrees=45).to(self.device)
 
         self.n_classes = self.model.module.num_classes
 
