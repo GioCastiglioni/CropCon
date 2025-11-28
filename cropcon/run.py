@@ -17,7 +17,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from cropcon.datasets.base import GeoFMDataset, GeoFMSubset, RawGeoFMDataset
 from cropcon.decoders.base import Decoder
-from cropcon.decoders.base import ProjectionHead
+from cropcon.decoders.base import BCLProj
 from cropcon.encoders.base import Encoder
 from cropcon.engine.evaluator import Evaluator
 from cropcon.utils.collate_fn import get_collate_fn
@@ -237,12 +237,6 @@ def main(cfg: DictConfig) -> None:
         decoder.mask_token = nn.Parameter(mask_tensor)
 
     decoder.to(device)
-    decoder = torch.nn.parallel.DistributedDataParallel(
-            decoder,
-            device_ids=[local_rank],
-            output_device=local_rank,
-            find_unused_parameters=cfg.finetune,
-        )
 
     if cfg.pretrain:
         encoder_teacher: Encoder = instantiate(cfg.encoder)
@@ -290,7 +284,7 @@ def main(cfg: DictConfig) -> None:
         nn.init.kaiming_normal_(mask_tensor_teacher, mode='fan_in', nonlinearity='relu')
         teacher.mask_token = nn.Parameter(mask_tensor_teacher)
         teacher.to(device)
-        teacher.load_state_dict(decoder.module.state_dict())
+        teacher.load_state_dict(decoder.state_dict())
         teacher = torch.nn.parallel.DistributedDataParallel(
                 teacher,
                 device_ids=[local_rank],
@@ -300,15 +294,17 @@ def main(cfg: DictConfig) -> None:
 
     logger.info(
             "Built {} for {} encoder.".format(
-                decoder.module.model_name, type(encoder).__name__
+                decoder.model_name, type(encoder).__name__
             )
         )
     
-    logger.info(f"Total parameters: {sum(p.numel() for p in decoder.module.parameters())}")
+    logger.info(f"Total parameters: {sum(p.numel() for p in decoder.parameters())}")
 
-    def non_segment_params(model: nn.Module) -> iter:
+    def params_extractor(model: nn.Module, encoder=False) -> iter:
+        condition = (("encoder" in name) or ("tmap" in name))
+        condition = condition if encoder else not condition
         for name, param in model.named_parameters():
-            if not name.startswith("out_conv."):
+            if condition:
                 yield param
 
     modalities = list(encoder.input_bands.keys())
@@ -416,14 +412,53 @@ def main(cfg: DictConfig) -> None:
         if not cfg.pretrain:
             criterion = instantiate(cfg.criterion)
             criterion = criterion.to(device)
-        else: criterion = decoder.module.criterion
+            if str(criterion) == "BalancedContrastiveLearning":
+                prot_mlp = BCLProj(
+                    in_channels = decoder.dec_topology[0],
+                    hidden_d = criterion.hidden_d,
+                    out_d = criterion.out_d
+                )
+                criterion.prot_mlp = torch.nn.parallel.DistributedDataParallel(
+                    prot_mlp.to(device),
+                    device_ids=[local_rank],
+                    output_device=local_rank,
+                    find_unused_parameters=cfg.finetune,
+                )
+                views_mlp = BCLProj(
+                    in_channels = decoder.dec_topology[0],
+                    hidden_d = criterion.hidden_d,
+                    out_d = criterion.out_d
+                )
+                criterion.views_mlp = torch.nn.parallel.DistributedDataParallel(
+                    views_mlp.to(device),
+                    device_ids=[local_rank],
+                    output_device=local_rank,
+                    find_unused_parameters=cfg.finetune,
+                )
+            decoder = torch.nn.parallel.DistributedDataParallel(
+                    decoder,
+                    device_ids=[local_rank],
+                    output_device=local_rank,
+                    find_unused_parameters=cfg.finetune,
+                )
+        else:
+            decoder = torch.nn.parallel.DistributedDataParallel(
+                decoder,
+                device_ids=[local_rank],
+                output_device=local_rank,
+                find_unused_parameters=cfg.finetune,
+            )
+            criterion = decoder.module.criterion
 
         params = []
 
         if not cfg.pretrain: 
-            params.append({'params': decoder.module.out_conv.parameters(), 'lr': cfg.optimizer.lr})
+            params.append({'params': params_extractor(decoder.module, encoder=False), 'lr': cfg.optimizer.lr})
+            if str(criterion) == "BalancedContrastiveLearning":
+                params.append({'params': criterion.prot_mlp.parameters(), 'lr': cfg.optimizer.lr})
+                params.append({'params': criterion.views_mlp.parameters(), 'lr': cfg.optimizer.lr})
         if cfg.finetune:
-            params.append({'params': non_segment_params(decoder.module), 'lr': cfg.optimizer.lr * cfg.ft_rate})
+            params.append({'params': params_extractor(decoder.module, encoder=True), 'lr': cfg.optimizer.lr * cfg.ft_rate})
 
         optimizer = instantiate(cfg.optimizer, params=None)
         optimizer = optimizer(params=params)
@@ -538,7 +573,7 @@ def main(cfg: DictConfig) -> None:
                         "Best_mAcc": model_dict["mAcc"]
                     }
                 )
-    wandb.finish()
+    if cfg.use_wandb and rank == 0: wandb.finish()
 
     torch.distributed.destroy_process_group()
 
