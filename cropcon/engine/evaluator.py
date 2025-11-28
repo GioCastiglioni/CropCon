@@ -136,9 +136,31 @@ class SegEvaluator(Evaluator):
             (self.num_classes, self.num_classes), device=self.device
         )
         total_loss = 0
-        if str(self.criterion) != "PrototypeBasedSemSegLoss":
-            for batch_idx, data in enumerate(tqdm(self.val_loader, desc=tag)):
-                image, target = data["image"], data["target"]
+        for batch_idx, data in enumerate(tqdm(self.val_loader, desc=tag)):
+            image, target = data["image"], data["target"]
+            if str(self.criterion) == "BalancedContrastiveLearning":
+                image = {"v1": image["optical"].to(self.device)}
+                target = target.to(self.device)
+                logits = model(image["v1"], batch_positions=data["metadata"])
+                
+                loss_tensor = F.cross_entropy(logits, target)
+                torch.distributed.all_reduce(loss_tensor, op=torch.distributed.ReduceOp.SUM)
+                total_loss += loss_tensor.item()
+                
+                if logits.shape[1] == 1:
+                    pred = (torch.sigmoid(logits) > 0.5).type(torch.int64).squeeze(dim=1)
+                else:
+                    pred = torch.argmax(logits, dim=1)
+
+                valid_mask = target != self.ignore_index
+                pred, target = pred[valid_mask], target[valid_mask]
+
+                count = torch.bincount(
+                    (pred * self.num_classes + target), minlength=self.num_classes ** 2
+                )
+                confusion_matrix += count.view(self.num_classes, self.num_classes)
+                
+            elif str(self.criterion) != "PrototypeBasedSemSegLoss":
                 image = {"v1": image["optical"].to(self.device)}
                 target = target.to(self.device)
                 logits = model(image["v1"], batch_positions=data["metadata"])
@@ -159,9 +181,8 @@ class SegEvaluator(Evaluator):
                     (pred * self.num_classes + target), minlength=self.num_classes ** 2
                 )
                 confusion_matrix += count.view(self.num_classes, self.num_classes)
-        else:
-            for batch_idx, data in enumerate(tqdm(self.val_loader, desc=tag)):
-                image, target = data["image"], data["target"]
+            
+            else:
                 image = image["optical"].to(self.device)
                 target = target.to(self.device) # [B, H, W]
 
@@ -197,7 +218,8 @@ class SegEvaluator(Evaluator):
                     (pred * self.num_classes + target), minlength=self.num_classes ** 2
                 )
                 confusion_matrix += count.view(self.num_classes, self.num_classes)
-
+            torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
+            
         torch.distributed.all_reduce(
             confusion_matrix, op=torch.distributed.ReduceOp.SUM
         )
