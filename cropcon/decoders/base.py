@@ -43,3 +43,20 @@ class ProjectionHead(nn.Module):
         out = self.net(x)
         out = F.normalize(out, dim=1)  # L2 normalize across channels
         return out
+    
+class BCLProj(nn.Module):
+    def __init__(self, in_channels=64, hidden_d=512, out_d=128):
+        super().__init__()
+        self.in_layer = nn.Conv2d(in_channels, hidden_d, kernel_size=1)
+        self.norm = nn.GroupNorm(hidden_d//16, hidden_d)
+        self.ReLU = nn.ReLU(inplace=False)
+        self.out = nn.Conv2d(hidden_d, out_d, kernel_size=1)
+
+    def forward(self, x):
+        # x: [B, C, H, W]
+        out = self.in_layer(x)
+        out = self.norm(out)
+        out = self.ReLU(out)
+        out = self.out(out)
+        out = F.normalize(out, dim=1)  # L2 normalize across channels
+        return out
