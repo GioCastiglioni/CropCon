@@ -417,99 +417,6 @@ class PrototypeBasedSemSegLoss(nn.Module):
     def __str__(self):
         return 'PrototypeBasedSemSegLoss'
 
-
-
-
-class VICReg(torch.nn.Module):
-
-    def __init__(self, vic_weights: list[float], inv_loss: str = "mse", ignore_index = None):
-        super().__init__()
-
-        self.variance_loss_epsilon = 1e-08
-        
-        self.variance_loss_weight = vic_weights[0]
-        self.invariance_loss_weight = vic_weights[1]
-        self.covariance_loss_weight = vic_weights[2]
-
-        if inv_loss == "mse":
-            self.inv = torch.nn.MSELoss()
-        elif inv_loss == "cca":
-            self.inv = CCALoss()
-        elif inv_loss == "ntxent":
-            self.inv = NTXentLoss()
-
-    def forward(self, z_a, z_b, each_comp=False):
-
-        loss_inv = self.inv(z_a, z_b)
-
-        std_z_a = torch.sqrt(
-            z_a.var(dim=0, unbiased=False) + self.variance_loss_epsilon
-        )
-        std_z_b = torch.sqrt(
-            z_b.var(dim=0, unbiased=False) + self.variance_loss_epsilon
-        )
-        loss_v_a = torch.mean(F.relu(1 - std_z_a))
-        loss_v_b = torch.mean(F.relu(1 - std_z_b))
-        loss_var = loss_v_a + loss_v_b
-
-        N, D = z_a.shape
-
-        z_a = z_a - z_a.mean(dim=0)
-        z_b = z_b - z_b.mean(dim=0)
-
-        cov_z_a = ((z_a.T @ z_a) / N).square()  # DxD
-        cov_z_b = ((z_b.T @ z_b) / N).square()  # DxD
-        loss_c_a = (cov_z_a.sum() - cov_z_a.diagonal().sum()) / D
-        loss_c_b = (cov_z_b.sum() - cov_z_b.diagonal().sum()) / D
-        loss_cov = loss_c_a + loss_c_b
-
-        
-        weighted_var = loss_var * self.variance_loss_weight
-        weighted_cov = loss_cov * self.covariance_loss_weight
-
-        weighted_inv = loss_inv * self.invariance_loss_weight
-
-        loss = weighted_inv + weighted_var + weighted_cov
-        if each_comp: return loss.mean(), loss_var, loss_inv, loss_cov
-        else: return loss.mean()
-
-
-class SimCLR(torch.nn.Module):
-    def __init__(self, tau: float = 0.1):
-        super().__init__()
-        self.temperature = tau
-
-    def forward(self, z_a, z_b):
-        """
-        z_a: [N, D] tensor
-        z_b: [N, D] tensor
-        """
-
-        N = z_a.shape[0]
-        # Normalize representations
-        z_a = F.normalize(z_a, dim=1)
-        z_b = F.normalize(z_b, dim=1)
-
-        # Concatenate for 2N samples
-        z = torch.cat([z_a, z_b], dim=0)  # [2N, D]
-
-        # Compute similarity matrix
-        sim = torch.matmul(z, z.T) / self.temperature  # [2N, 2N]
-
-        # Mask self-similarity
-        mask = torch.eye(2 * N, dtype=torch.bool, device=z.device)
-        sim.masked_fill_(mask, -float("inf"))
-
-        # Positive pairs: i with i+N (first with second view)
-        targets = torch.arange(N, device=z.device)
-        targets = torch.cat([targets + N, targets], dim=0)  # [2N]
-
-        # Cross-entropy loss
-        loss = F.cross_entropy(sim, targets)
-
-        return loss
-
-
 class DICELoss(torch.nn.Module):
     def __init__(self, ignore_index: int) -> None:
         super(DICELoss, self).__init__()
@@ -638,110 +545,161 @@ class SupConLoss(torch.nn.Module):
         return 'SupConLoss'
     
 
-class LogitCompensation(torch.nn.Module): 
-    def __init__(self, distribution, ignore_index=-1, device="cuda"):
-        super().__init__()
-        priors = torch.tensor(distribution, dtype=torch.float32)
-        self.log_priors = torch.log(priors).to(device)
-        self.ignore_index = ignore_index
+class LogitCompensation(nn.Module):
+    def __init__(self, distribution):
+        super(LogitCompensation, self).__init__()
+        
+        priors = torch.tensor(distribution).float()
+        logit_adj = torch.log(priors + 1e-9) 
+        self.register_buffer('logit_adj', logit_adj)
 
-    def forward(self, seg_logits, seg_targets):
-        """
-        seg_logits: [N, C, H, W] raw logits from segmentation head
-        seg_targets: [N, H, W] ground-truth labels
-        """
-        log_priors = self.log_priors
-
-        # Add log-prior compensation to each class logit
-        comp_logits = seg_logits + log_priors.view(1, -1, 1, 1)
-
-        # Apply cross-entropy with ignore_index
-        return F.cross_entropy(
-            comp_logits, 
-            seg_targets, 
-            reduction='mean',
-            ignore_index=self.ignore_index
-        )
-
+    def forward(self, logits, targets):
+        
+        #logits = logits + self.logit_adj.view(1, -1, 1, 1)
+        loss = F.cross_entropy(logits, targets)
+        
+        return loss
+    
     def __str__(self):
         return 'LogitCompensation'
 
 
-class CropConLoss(torch.nn.Module):
-    def __init__(self, tau=0.1, ignore_index=-1, bcl_config="original", device='cuda'):
-        super().__init__()
-        self.temperature = tau
+class BCLSegmentationLoss(nn.Module):
+    def __init__(self, num_classes, tau=0.1, max_anchors=1024, max_context=2048, ignore_index=-1):
+        """
+        Args:
+            num_classes (int): Cantidad de clases.
+            tau (float): Temperatura.
+            max_anchors (int): Cuantos píxeles muestrear de v1 para calcular la loss (reduce memoria).
+            max_context (int): Cuantos píxeles de (v1 + v2) usar como "diccionario" o contexto.
+            ignore_index (int): Label a ignorar.
+        """
+        super(BCLSegmentationLoss, self).__init__()
+        self.num_classes = num_classes
+        self.tau = tau
+        self.max_anchors = max_anchors
+        self.max_context = max_context
         self.ignore_index = ignore_index
-        self.bcl_config = bcl_config
-        self.device = device
 
-    def forward(self, protos, proj2, target2):
-
-        feats = F.normalize(proj2, p=2, dim=-1)
-        labels = target2.long()
-        protos = F.normalize(protos, p=2, dim=-1)
+    def _sample_pixels(self, features, targets, num_samples):
+        b, d, h, w = features.shape
+        feat_flat = features.permute(0, 2, 3, 1).reshape(-1, d)
+        targ_flat = targets.reshape(-1)
         
-        return self.forward_original(protos, feats, labels)
+        mask = targ_flat != self.ignore_index
+        feat_valid = feat_flat[mask]
+        targ_valid = targ_flat[mask]
+        
+        if feat_valid.size(0) == 0:
+            return None, None
 
-    def forward_original(self, protos, feats, labels):                       # [C, D]
+        if feat_valid.size(0) > num_samples:
+            perm = torch.randperm(feat_valid.size(0), device=features.device)[:num_samples]
+            return feat_valid[perm], targ_valid[perm]
+        else:
+            return feat_valid, targ_valid
 
-        # Filter out ignored labels
-        valid_mask = labels != self.ignore_index
-        feats = feats[valid_mask]
-        labels = labels[valid_mask]
+    def forward(self, z1, z2, prototypes, targets1, targets2):
+        device = z1.device
+        
+        anchors, anchors_labels = self._sample_pixels(z1, targets1, self.max_anchors)
+        
+        if anchors is None:
+            return 0.0*z1.sum()
 
-        M, D = feats.shape
-        if M == 0:
-            return torch.tensor(0.0, device=self.device, requires_grad=True)
+        ctx1, ctx1_labels = self._sample_pixels(z1, targets1, self.max_context // 2)
+        ctx2, ctx2_labels = self._sample_pixels(z2, targets2, self.max_context // 2)
+        
+        # Manejo de casos vacíos en contexto
+        ctx_list = []
+        lbl_list = []
+        if ctx1 is not None: 
+            ctx_list.append(ctx1); lbl_list.append(ctx1_labels)
+        if ctx2 is not None: 
+            ctx_list.append(ctx2); lbl_list.append(ctx2_labels)
+            
+        if not ctx_list:
+            return torch.tensor(0.0, device=device, requires_grad=True)
 
-        C = protos.size(0)
+        context_features = torch.cat(ctx_list, dim=0)
+        context_labels = torch.cat(lbl_list, dim=0)
 
-        # === Similarity matrices ===
-        sim_matrix = torch.matmul(feats, feats.T) / self.temperature        # [M, M]
-        proto_sim = torch.matmul(feats, protos.T) / self.temperature        # [M, C]
+        anchors = F.normalize(anchors, dim=1)
+        context_features = F.normalize(context_features, dim=1)
+        prototypes = F.normalize(prototypes, dim=1)
 
-        # Remove self-similarity
-        eye = torch.eye(M, device=self.device, dtype=torch.bool)
-        sim_matrix = sim_matrix.masked_fill(eye, -float('inf'))
+        pool_features = torch.cat([context_features, prototypes], dim=0)
+        
+        proto_labels = torch.arange(self.num_classes, device=device)
+        pool_labels = torch.cat([context_labels, proto_labels], dim=0)
 
-        # === Class match masks ===
-        match_matrix = labels.unsqueeze(1) == labels.unsqueeze(0)           # [M, M]
+        sim_matrix = torch.matmul(anchors, pool_features.T) / self.tau
+        exp_sim = torch.exp(sim_matrix)
 
-        # === Numerator ===
-        numer_region = torch.exp(sim_matrix) * match_matrix                 # [M, M]
-        numer_proto = torch.gather(torch.exp(proto_sim), 1, labels.view(-1,1))  # [M, 1]
-        numer = numer_region.sum(dim=1) + numer_proto.squeeze(1)            # [M]
+        pool_one_hot = F.one_hot(pool_labels, num_classes=self.num_classes).float()
+        sum_exp_per_class = torch.matmul(exp_sim, pool_one_hot)
+        cardinality = pool_one_hot.sum(dim=0).clamp(min=1.0)
+        avg_exp_per_class = sum_exp_per_class / cardinality.view(1, -1)
 
-        # === Denominator with class balancing ===
-        # Estimate class frequency from labels (both feats and protos)
-        labels_all = torch.cat([labels, torch.arange(C, device=self.device)])    # [M + C]
-        cls_freq = torch.bincount(labels_all, minlength=C).float()          # [C]
-        cls_freq = cls_freq + 1e-6  # avoid division by zero
+        bcl_denominator = avg_exp_per_class.sum(dim=1, keepdim=True)
+        
+        log_prob_matrix = sim_matrix - torch.log(bcl_denominator + 1e-9)
+        mask_positives = (anchors_labels.unsqueeze(1) == pool_labels.unsqueeze(0)).float()
+        log_probs_pos = (log_prob_matrix * mask_positives).sum(dim=1)
+        
+        num_positives = mask_positives.sum(dim=1).clamp(min=1.0)
+        loss_per_anchor = - (log_probs_pos / num_positives)
+        
+        return loss_per_anchor.mean()
+    
 
-        # Construct per-instance weights
-        feat_weights = cls_freq[labels]                                     # [M]
-        proto_weights = cls_freq.unsqueeze(0).expand(M, -1)                 # [M, C]
+class BalancedContrastiveLearning(nn.Module):
+    def __init__(
+            self,
+            num_classes,
+            distribution,
+            ignore_index=-1,
+            lamb=2.0,
+            mu=0.6,
+            temperature=0.1,
+            in_channels=64,
+            hidden_d=512,
+            out_d=128
+        ):
+        super(BalancedContrastiveLearning, self).__init__()
+        self.num_classes = num_classes
+        self.distribution = distribution
+        self.ignore_index = ignore_index
+        self.lamb = lamb
+        self.mu = mu
+        self.temperature = temperature
+        self.in_channels = in_channels
+        self.hidden_d = hidden_d
+        self.out_d = out_d
 
-        # Weight feat-feat similarities
-        weight_matrix = feat_weights.unsqueeze(1).expand(-1, M)             # [M, M]
-        weight_matrix = weight_matrix.masked_fill(eye, 1e6)                 # avoid self-similarities
+        self.LC = LogitCompensation(self.distribution)
+        self.BCL = BCLSegmentationLoss(
+            self.num_classes, 
+            tau=self.temperature,
+            max_anchors=4096, 
+            max_context=32768,
+            ignore_index=self.ignore_index
+        )
 
-        denom_region = torch.exp(sim_matrix) / weight_matrix                # [M, M]
-        denom_proto = torch.exp(proto_sim) / proto_weights                  # [M, C]
-        denom = denom_region.sum(dim=1) + denom_proto.sum(dim=1)            # [M]
+        #self.views_mlp(in_channels, hidden_d, out_d)
+        #self.prot_mlp(in_channels, hidden_d, out_d)
 
-        # === Final loss ===
-        loss = -torch.log(numer / (denom + 1e-12))                          # [M]
+    def forward(self, logits, z2, z3, targets, targets2, targets3, prototypes):
 
-        # === Prototypes Regularization ===
-        prot_var_reg = torch.sqrt(protos.var(dim=0) + 1e-12)
-        prot_var_reg = torch.mean(F.relu(1 - prot_var_reg))
+        LC = self.LC(logits, targets)
 
-        prot_cov_reg = ((protos.T @ protos) / (C - 1)).square()
-        prot_cov_reg = (prot_cov_reg.sum() - prot_cov_reg.diagonal().sum()) / D
+        z2 = self.views_mlp(z2)
+        z3 = self.views_mlp(z3)
+        prototypes = self.prot_mlp(prototypes).flatten(start_dim=1)
 
-        return loss.mean() + prot_var_reg + 0.1 * prot_cov_reg
-
+        BCL = self.BCL(z2, z3, prototypes, targets2, targets3)
+        
+        return self.lamb*LC + self.mu*BCL
+    
     def __str__(self):
-        return 'CropConLoss'
-
+        return 'BalancedContrastiveLearning'
