@@ -142,15 +142,66 @@ class RandomChannelDropout(torch.nn.Module):
 
 
 class ConsistentTransform(torch.nn.Module):
-    def __init__(self, h_w=128, degrees=30, view: int = 1):
+    def __init__(self, h_w=128, degrees=30):
         super().__init__()
-        self.degrees = degrees
         self.transforms = v2.Compose([
-            #RandomChannelDropout(p=0.2, max_drop=5),
             v2.RandomResizedCrop(size=(h_w, h_w), scale=(0.2, 1.0)),
             v2.RandomHorizontalFlip(p=0.5),
             v2.RandomVerticalFlip(p=0.5),
-            v2.RandomApply([v2.GaussianBlur(kernel_size=11, sigma=(0.1, 2.0))], p=1.0 if view == 1 else 0.1)
+            ])
+
+    def forward(self, sample):
+        if "mask" in sample:
+            sample = {"image": tv_tensors.Image(sample["image"]), "mask": tv_tensors.Mask(sample["mask"])}
+            sample = self.transforms(sample)
+            img, mask = torch.as_tensor(sample["image"]), torch.as_tensor(sample["mask"])
+
+            img = self.add_gaussian_noise(img)
+
+            return {"image": img, "mask": mask}
+        else:
+            sample = {"image": tv_tensors.Image(sample["image"])}
+            sample = self.transforms(sample)
+            img = torch.as_tensor(sample["image"])
+
+            img = self.add_gaussian_noise(img)
+
+            return {"image": img}
+    
+    def add_gaussian_noise(self, img, std_ratio=0.02):
+        """
+        Add Gaussian noise to a tensor image (C, H, W) or (B, C, H, W),
+        with noise scaled by the image's dynamic range per channel.
+        
+        Args:
+            img: Tensor image
+            std_ratio: Noise std as a ratio of (max - min) per channel
+        """
+        # Compute min and max per channel (keep dims for broadcasting)
+        dims = (-2, -1)  # spatial dims
+        img_min = img.amin(dim=dims, keepdim=True)
+        img_max = img.amax(dim=dims, keepdim=True)
+        dynamic_range = img_max - img_min + 1e-8  # avoid zero division
+
+        std = std_ratio * dynamic_range
+        noise = torch.randn_like(img) * std
+        noisy_img = img + noise
+        
+        # Clamp per channel using broadcasting (no .item())
+        noisy_img = torch.max(noisy_img, img_min)
+        noisy_img = torch.min(noisy_img, img_max)
+
+        return noisy_img
+
+class LeJEPATransform(torch.nn.Module):
+    def __init__(self, h_w=128, degrees=30):
+        super().__init__()
+        self.degrees = degrees
+        self.transforms = v2.Compose([
+            v2.RandomResizedCrop(size=(h_w, h_w), scale=(0.2, 1.0)),
+            v2.RandomHorizontalFlip(p=0.5),
+            v2.RandomVerticalFlip(p=0.5),
+            v2.RandomApply([v2.GaussianBlur(kernel_size=11, sigma=(0.1, 2.0))], p=0.5)
             ])
 
     def forward(self, sample):
