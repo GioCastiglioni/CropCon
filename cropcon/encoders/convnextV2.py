@@ -34,7 +34,8 @@ class ConvNext(Encoder):
         output_dim: int | list[int],
         download_url: str,
         encoder_weights: str | None = None,
-        projection_dim: int = 512
+        projection_dim: int = 128,
+        depths: list = [2, 2, 8, 2]
     ):
         super().__init__(
             model_name="ConvNeXtV2",
@@ -43,17 +44,16 @@ class ConvNext(Encoder):
             input_size=input_size,
             embed_dim=0,
             output_dim=output_dim,
-            output_layers=None,
+            output_layers=topology,
             multi_temporal=multi_temporal,
             multi_temporal_output=False,
             pyramid_output=True,
             download_url=download_url,
         )
-        self.depths = [3, 3, 9, 3]
+        self.depths = depths
         self.num_stage = len(self.depths)
         self.in_channels = len(input_bands["optical"])
         self.topology = topology
-        self.output_layers = self.topology
         drop_path_rate = 0.
 
         self.downsample_layers = nn.ModuleList() # stem and 3 intermediate downsampling conv layers
