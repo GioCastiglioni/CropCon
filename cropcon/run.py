@@ -190,7 +190,7 @@ def main(cfg: DictConfig) -> None:
             cfg.decoder,
             encoder=encoder,
         )
-
+    decoder = torch.nn.SyncBatchNorm.convert_sync_batchnorm(decoder)
     decoder.to(device)
 
     logger.info(
@@ -199,6 +199,8 @@ def main(cfg: DictConfig) -> None:
             )
         )
     
+    logger.info(f"Encoder parameters: {sum(p.numel() for name, p in decoder.encoder.named_parameters() if not ('projector' in name))}")
+    logger.info(f"Projector parameters: {sum(p.numel() for name, p in decoder.encoder.named_parameters() if ('projector' in name))}")
     logger.info(f"Total parameters: {sum(p.numel() for p in decoder.parameters())}")
 
     def params_extractor(model: nn.Module, encoder=False) -> iter:
