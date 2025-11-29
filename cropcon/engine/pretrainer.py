@@ -31,6 +31,8 @@ class Trainer:
         ckpt_interval: int,
         eval_interval: int,
         log_interval: int,
+        n_global: int = 2,
+        n_local: int = 8
     ):
         """Initialize the Trainer.
 
@@ -94,8 +96,8 @@ class Trainer:
         
         self.transform = ConsistentTransform(h_w=self.model.module.encoder.input_size, degrees=45).to(self.device)
 
-        self.n_global = 2
-        self.n_local = 8
+        self.n_global = n_global
+        self.n_local = n_local
 
     
     def train(self) -> None:
@@ -156,8 +158,8 @@ class Trainer:
                     out, feature_maps, _, _ = self.model.module.encoder(view, batch_positions=data["metadata"])
                     out = self.model.module.encoder.projector(out)
                     global_views.append(out)
-                    for local_index in local_indexes:
-                        local_views.append(self.model.module.encoder.projector(feature_maps[-1][:,local_index,:,:,:]))
+                    for local_index in range(self.n_local//self.n_global):
+                        local_views.append(self.model.module.encoder.projector(feature_maps[-1][:,local_indexes[local_index],:,:,:]))
                 
                 loss, inv, sigreg = self.compute_loss(global_views, local_views)
 
