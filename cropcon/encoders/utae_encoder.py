@@ -29,7 +29,7 @@ class UTAE_Encoder(Encoder):
         output_dim: int | list[int],
         download_url: str,
         encoder_weights: str | None = None,
-        projection_dim: int = 128
+        projection_dim: int = 64
     ):
         super().__init__(
             model_name="utae_encoder",
@@ -88,6 +88,16 @@ class UTAE_Encoder(Encoder):
             nn.ReLU(),
             nn.Linear(2048, projection_dim)
         )
+        self.projector.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.trunc_normal_(m.weight, std=0.02)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, (nn.LayerNorm, nn.BatchNorm1d)):
+            nn.init.constant_(m.weight, 1.0)
+            nn.init.constant_(m.bias, 0)
 
     def forward(self, input, batch_positions=None):
         input = input.permute(0,2,1,3,4)
