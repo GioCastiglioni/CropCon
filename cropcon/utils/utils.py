@@ -201,7 +201,7 @@ class LeJEPATransform(torch.nn.Module):
             v2.RandomResizedCrop(size=(h_w, h_w), scale=(0.3, 1.0)),
             v2.RandomHorizontalFlip(p=0.5),
             v2.RandomVerticalFlip(p=0.5),
-            v2.RandomApply([v2.GaussianBlur()], p=0.5)
+            v2.RandomApply([v2.GaussianBlur(kernel_size=(11,11))], p=0.5)
             ])
 
     def forward(self, sample):
