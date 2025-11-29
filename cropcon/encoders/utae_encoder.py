@@ -29,7 +29,7 @@ class UTAE_Encoder(Encoder):
         output_dim: int | list[int],
         download_url: str,
         encoder_weights: str | None = None,
-        projection_dim: int = 512
+        projection_dim: int = 128
     ):
         super().__init__(
             model_name="utae_encoder",
@@ -38,7 +38,7 @@ class UTAE_Encoder(Encoder):
             input_size=input_size,
             embed_dim=0,
             output_dim=output_dim,
-            output_layers=None,
+            output_layers=topology,
             multi_temporal=multi_temporal,
             multi_temporal_output=False,
             pyramid_output=True,
@@ -100,7 +100,7 @@ class UTAE_Encoder(Encoder):
         feature_maps = [out]
         # SPATIAL ENCODER
         for i in range(len(self.topology) - 1):
-            out = self.encoder.down_blocks[i].smart_forward(feature_maps[-1])
+            out = self.down_blocks[i].smart_forward(feature_maps[-1])
             feature_maps.append(out)
 
         out, att = self.tmap(
