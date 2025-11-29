@@ -1,5 +1,7 @@
 _target_: cropcon.utils.schedulers.CosineAnnealingLR
 optimizer: null
 total_iters: null
-lr_milestones: [0.25]
+lr_milestones: [1.0]
+warmup_epochs: 5
+n_epochs: ${task.trainer.n_epochs}
 
