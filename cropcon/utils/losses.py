@@ -2,9 +2,7 @@ import torch
 from torch.nn import functional as F
 import torch.nn as nn
 import torch.distributed as dist
-from torch.distributed._functional_collectives import (
-    all_reduce as functional_all_reduce,
-)
+from torch.distributed.nn import all_reduce as functional_all_reduce
 from torch.distributed.nn import ReduceOp
 
 
@@ -740,7 +738,8 @@ class LeJEPA(nn.Module):
 
 def all_reduce(x, op="AVG"):
     if dist.is_available() and dist.is_initialized():
-        return functional_all_reduce(x, op.lower(), dist.group.WORLD)
+        op_enum = dist.ReduceOp.AVG if op.upper() == "AVG" else dist.ReduceOp.SUM
+        return functional_all_reduce(x, op=op_enum)
     else:
         return x
 
