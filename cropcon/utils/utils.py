@@ -198,10 +198,10 @@ class LeJEPATransform(torch.nn.Module):
         super().__init__()
         self.degrees = degrees
         self.transforms = v2.Compose([
-            v2.RandomResizedCrop(size=(h_w, h_w), scale=(0.2, 1.0)),
+            v2.RandomResizedCrop(size=(h_w, h_w), scale=(0.3, 1.0)),
             v2.RandomHorizontalFlip(p=0.5),
             v2.RandomVerticalFlip(p=0.5),
-            v2.RandomApply([v2.GaussianBlur(kernel_size=11, sigma=(0.1, 2.0))], p=0.5)
+            v2.RandomApply([v2.GaussianBlur()], p=0.5)
             ])
 
     def forward(self, sample):
@@ -219,13 +219,15 @@ class LeJEPATransform(torch.nn.Module):
 
             return {"image": img, "mask": mask}
         else:
-            sample = {"image": tv_tensors.Image(sample["image"])}
+            # Apply same rotation to both, with different interpolation modes
+            angle = torch.empty(1).uniform_(-self.degrees, self.degrees).item()
+            img=sample["image"]
+            img = self.rotate_with_reflection_padding(img, angle, is_mask=False)
+
+            sample = {"image": tv_tensors.Image(img)}
             sample = self.transforms(sample)
             img = torch.as_tensor(sample["image"])
 
-            # Apply same rotation to both, with different interpolation modes
-            angle = torch.empty(1).uniform_(-self.degrees, self.degrees).item()
-            img = self.rotate_with_reflection_padding(img, angle, is_mask=False)
 
             img = self.add_gaussian_noise(img)
 
