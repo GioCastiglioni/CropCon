@@ -246,6 +246,13 @@ class Trainer:
         final_inv = total_inv / len(self.val_loader)
         final_sigreg = total_sigreg / len(self.val_loader)
 
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            metrics_tensor = torch.tensor([final_val_loss, final_inv, final_sigreg], device=self.device)
+            torch.distributed.all_reduce(metrics_tensor, op=torch.distributed.ReduceOp.AVG)
+            final_val_loss = metrics_tensor[0].item()
+            final_inv = metrics_tensor[1].item()
+            final_sigreg = metrics_tensor[2].item()
+
         if self.use_wandb and self.rank == 0:
             self.wandb.log(
                 {
