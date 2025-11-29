@@ -727,11 +727,11 @@ class LeJEPA(nn.Module):
 
     def forward(self, global_views, local_views):
         B, K = global_views[0].shape
-        global_centroid = torch.stack(global_views).mean(dim=0)
         all_views_list = global_views + local_views
         all_views_tensor = torch.stack(all_views_list)
-        inv = (global_centroid.unsqueeze(0) - all_views_tensor).square().mean()
-        sigreg = torch.stack([self.sigreg(view) for view in all_views_list]).mean()
+        global_centroid = torch.stack(global_views).mean(dim=0)
+        inv = (global_centroid - all_views_tensor).square().mean()
+        sigreg = self.sigreg(all_views_tensor)
         return (1-self.lamb)*inv + self.lamb*sigreg, inv.item(), sigreg.item()
     
     def __str__(self):
@@ -879,7 +879,7 @@ class EppsPulley(UnivariateTest):
     """
 
     def __init__(
-        self, t_max: float = 5, n_points: int = 17, integration: str = "trapezoid"
+        self, t_max: float = 3, n_points: int = 17, integration: str = "trapezoid"
     ):
         super().__init__()
         assert n_points % 2 == 1
