@@ -432,7 +432,7 @@ def main(cfg: DictConfig) -> None:
                 num_workers=cfg.test_num_workers,
                 pin_memory=True,
                 persistent_workers=False,
-                drop_last=False,
+                drop_last=True,
                 collate_fn=collate_fn,
             )
             test_evaluator: Evaluator = instantiate(
