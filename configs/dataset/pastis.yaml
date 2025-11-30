@@ -8,7 +8,7 @@ img_size: 128
 multi_temporal: 6
 multi_modal: True
 fold_config: 1
-support_test: False
+support_test: True
 
 # classes
 ignore_index: 19
