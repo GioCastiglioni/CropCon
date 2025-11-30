@@ -5,7 +5,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from cropcon.decoders.base import Decoder
-from cropcon.decoders.ltae import LTAE2d, LTAEChannelAdaptor
 from cropcon.encoders.base import Encoder
 
 
@@ -287,11 +286,6 @@ class SegMTUPerNet(SegUPerNet):
 
         self.multi_temporal = multi_temporal
         self.multi_temporal_strategy = multi_temporal_strategy
-
-        self.ltae_adaptor = LTAEChannelAdaptor(
-                in_channels=encoder.output_dim,
-                out_channels=[channels for _ in encoder.output_dim],
-            )
 
     def forward_features(
         self, img: dict[str, torch.Tensor], batch_positions=None, output_shape: torch.Size | None = None
