@@ -20,3 +20,5 @@ pytest
 yacs
 wandb
 hydra-core
+zarr<3
+mgrs
