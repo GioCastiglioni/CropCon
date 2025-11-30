@@ -4,11 +4,9 @@ import torch.nn as nn
 
 from copy import deepcopy
 
-from collections import OrderedDict
-from typing import Sequence
 from cropcon.decoders.base import Decoder
 from cropcon.encoders.base import Encoder
-from cropcon.decoders.ltae import LTAE2d, LTAEChannelAdaptor, LTAEChannelAdaptorOut
+from cropcon.decoders.ltae import LTAE2d
 
 
 class UTAE(Decoder):
@@ -68,17 +66,8 @@ class UTAE(Decoder):
             )
             for i in range(len(self.topology) - 1, 0, -1)
         )
-        self.tmap = LTAE2d(
-            in_channels=self.topology[-1],
-            d_model=256,
-            n_head=16,
-            mlp=[256, self.topology[-1]],
-            return_att=True,
-            d_k=4,
-        )
         self.temporal_aggregator = Temporal_Aggregator(mode="att_group")
-        #self.out_conv = ConvBlock(nkernels=[self.dec_topology[0]] + [self.dec_topology[0], self.num_classes], padding_mode="reflect")
-        self.out_conv = nn.Conv2d(self.dec_topology[0], self.num_classes, kernel_size=1)
+        self.conv_seg = nn.Conv2d(self.dec_topology[0], self.num_classes, kernel_size=1)
 
     def forward(self, x, batch_positions=None, return_feats=False):
         feat_v = self.forward_features(x, batch_positions=batch_positions)
