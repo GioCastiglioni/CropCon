@@ -170,7 +170,7 @@ class Trainer:
                         image2, target2 = self.temporal_transform(image, target)
                         image3, target3 = self.temporal_transform(image, target)
 
-                    prototypes = self.model.module.out_conv.weight
+                    prototypes = self.model.module.conv_seg.weight
 
                     z2 = self.model.module.forward_features(image2.requires_grad_(True), batch_positions=data["metadata"])
                     z3 = self.model.module.forward_features(image3.requires_grad_(True), batch_positions=data["metadata"])
@@ -312,18 +312,21 @@ class Trainer:
         """
         model_dict = torch.load(resume_path, map_location=self.device, weights_only=False)
         
-        pretrain_key = "patch_conv.weight"
+        pretrain_key = "projector"
 
         if "model" in model_dict:
-            if pretrain_key in model_dict["model"]:
+            if any(pretrain_key in k for k in model_dict["model"]):
                 self.logger.info(f"Loading pre-trained weights from {resume_path}...")
-                self.model.module.load_state_dict(model_dict["model"], strict=False)
+                self.model.module.load_state_dict(model_dict["model"])
                 self.start_epoch = 0
-                self.logger.info("Pre-trained weights loaded. Starting downstream task from epoch 0.")
+                self.logger.info("Pre-trained weights loaded successfully. Deleting projection head from pretraining.")
+                del self.model.module.encoder.projector
+                self.logger.info("Starting downstream task from epoch 0.")
+
             
             else:
                 self.logger.info(f"Resuming downstream training from checkpoint {resume_path}...")
-                self.model.module.load_state_dict(model_dict["model"], strict=False)
+                self.model.module.load_state_dict(model_dict["model"])
                 self.optimizer.load_state_dict(model_dict["optimizer"])
                 self.lr_scheduler.load_state_dict(model_dict["lr_scheduler"])
                 self.scaler.load_state_dict(model_dict["scaler"])
@@ -334,7 +337,7 @@ class Trainer:
             self.logger.info(f"Loading weights-only file from {resume_path}...")
             model_dict.pop('out_conv.weight', None)
             model_dict.pop('out_conv.bias', None)
-            self.model.module.load_state_dict(model_dict, strict=False)
+            self.model.module.load_state_dict(model_dict)
             self.start_epoch = 0
             self.logger.info("Weights loaded. Starting from epoch 0.")
 
