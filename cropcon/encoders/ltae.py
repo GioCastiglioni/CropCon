@@ -34,6 +34,50 @@ class PositionalEncoder(nn.Module):
             )
 
         return sinusoid_table
+    
+class GeoTemporalEncoder(nn.Module):
+    def __init__(self, embed_dim=256):
+        super().__init__()
+        self.time_dim = embed_dim // 2
+        self.lat_dim = embed_dim // 4
+        self.lon_dim = embed_dim // 4
+        
+        self.register_buffer('time_freqs', self._get_freqs(self.time_dim))
+        self.register_buffer('lat_freqs', self._get_freqs(self.lat_dim))
+        self.register_buffer('lon_freqs', self._get_freqs(self.lon_dim))
+
+    def _get_freqs(self, dim):
+        half_dim = dim // 2
+        freqs = torch.exp(torch.arange(half_dim, dtype=torch.float32) * -(np.log(10000.0) / half_dim))
+        return freqs
+
+    def forward(self, doy, lat, lon):
+        """
+        doy: Tensor [B, T]
+        lat: Tensor [B]
+        lon: Tensor [B]
+        """
+        B, T = doy.shape
+        
+        doy_rad = doy * 2 * np.pi
+        
+        lat_rad = lat * (np.pi / 2)
+        
+        lon_rad = lon * np.pi
+        
+        lat_rad = lat_rad.unsqueeze(1).repeat(1, T) 
+        lon_rad = lon_rad.unsqueeze(1).repeat(1, T) 
+        
+        def embed(inp, freqs):
+            # inp: [B, T] -> [B, T, 1] * [1, 1, D/2] -> [B, T, D/2]
+            args = inp.unsqueeze(-1) * freqs.view(1, 1, -1)
+            return torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
+
+        t_emb = embed(doy_rad, self.time_freqs)
+        l_emb = embed(lat_rad, self.lat_freqs)
+        ln_emb = embed(lon_rad, self.lon_freqs)
+        
+        return torch.cat([t_emb, l_emb, ln_emb], dim=-1)
 
 class LTAEChannelAdaptorOut(nn.Module):
     def __init__(self, in_channels: int, out_channels: list[int]) -> None:
@@ -119,7 +163,7 @@ class LTAE2d(nn.Module):
         d_model=256,
         T=1000,
         return_att=False,
-        positional_encoding=True,
+        positional_encoding="normal",
         layer_norm=False,
     ):
         """
@@ -136,13 +180,14 @@ class LTAE2d(nn.Module):
                 to project them into a feature space of dimension d_model.
             T (int): Period to use for the positional encoding.
             return_att (bool): If true, the module returns the attention masks along with the embeddings (default False)
-            positional_encoding (bool): If False, no positional encoding is used (default True).
+            positional_encoding (bool): None, 'geotime', 'normal'.
         """
         super(LTAE2d, self).__init__()
         self.in_channels = in_channels
         self.mlp = copy.deepcopy(mlp)
         self.return_att = return_att
         self.n_head = n_head
+        self.positional_encoding = positional_encoding
 
         if d_model is not None:
             self.d_model = d_model
@@ -152,10 +197,12 @@ class LTAE2d(nn.Module):
             self.inconv = None
         assert self.mlp[0] == self.d_model
 
-        if positional_encoding:
+        if positional_encoding == "normal":
             self.positional_encoder = PositionalEncoder(
                 self.d_model // n_head, T=T, repeat=n_head
             )
+        elif positional_encoding == "geotime":
+            self.positional_encoder = GeoTemporalEncoder(self.d_model)
         else:
             self.positional_encoder = None
 
@@ -214,15 +261,32 @@ class LTAE2d(nn.Module):
         if self.inconv is not None:
             out = self.inconv(out.permute(0, 2, 1)).permute(0, 2, 1)
 
-        if self.positional_encoder is not None:
+        if self.positional_encoding == "normal":
             bp = (
-                batch_positions.unsqueeze(-1)
+                batch_positions["time_linear"].unsqueeze(-1)
                 .repeat((1, 1, h))
                 .unsqueeze(-1)
                 .repeat((1, 1, 1, w))
             )  # BxTxHxW
             bp = bp.permute(0, 2, 3, 1).contiguous().view(sz_b * h * w, seq_len)
             out = out + self.positional_encoder(bp.to(out.device))
+        elif self.positional_encoding == "geotime":
+            doy = batch_positions["doy"]
+            lat = batch_positions["lat"]
+            lon = batch_positions["lon"]
+
+            doy_pixel = doy.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, h, w)
+            doy_pixel = doy_pixel.permute(0, 2, 3, 1).reshape(sz_b * h * w, seq_len)
+            
+            lat_pixel = lat.view(sz_b, 1, 1).expand(-1, h, w).reshape(sz_b * h * w)
+            lon_pixel = lon.view(sz_b, 1, 1).expand(-1, h, w).reshape(sz_b * h * w)
+            
+            pe = self.positional_encoder(
+                doy_pixel.to(out.device), 
+                lat_pixel.to(out.device), 
+                lon_pixel.to(out.device)
+            )
+            out = out + pe
 
         out, attn = self.attention_heads(out, pad_mask=pad_mask)
 

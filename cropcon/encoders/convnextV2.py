@@ -35,7 +35,8 @@ class ConvNext(Encoder):
         download_url: str,
         encoder_weights: str | None = None,
         projection_dim: int = 64,
-        depths: list = [2, 2, 8, 2]
+        depths: list = [2, 2, 8, 2],
+        positional_encoding: str | None = "normal"
     ):
         super().__init__(
             model_name="ConvNeXtV2",
@@ -49,6 +50,7 @@ class ConvNext(Encoder):
             multi_temporal_output=False,
             pyramid_output=True,
             download_url=download_url,
+            positional_encoding=positional_encoding
         )
         self.depths = depths
         self.num_stage = len(self.depths)
@@ -90,6 +92,7 @@ class ConvNext(Encoder):
             mlp=[256, self.topology[-1]],
             return_att=True,
             d_k=4,
+            positional_encoding=positional_encoding,
             layer_norm=True
         )
         self.projector = nn.Sequential(
@@ -136,7 +139,7 @@ class ConvNext(Encoder):
 
         out, att = self.tmap(
             feature_maps[-1].permute(0, 2, 1, 3, 4),        # (B, C, T, H, W)
-            batch_positions=batch_positions.to(x.device),
+            batch_positions=batch_positions,
             pad_mask=pad_mask,
         )
 

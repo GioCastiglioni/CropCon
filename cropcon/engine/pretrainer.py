@@ -10,6 +10,7 @@ import torch.nn as nn
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from cropcon.utils.logger import RunningAverageMeter, sec_to_hm
 from cropcon.utils.utils import LeJEPATransform as ConsistentTransform
@@ -159,6 +160,7 @@ class Trainer:
         end_time = time.time()
         for batch_idx, data in enumerate(self.train_loader):
 
+            data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
             views = []
             for _ in range(self.n_global):
                 views.append(self.temporal_transform(data["image"]["optical"].to(self.device)))
@@ -249,8 +251,9 @@ class Trainer:
         total_sigreg = 0.0
         
         end_time = time.time()
-        for batch_idx, data in enumerate(self.val_loader):
+        for batch_idx, data in enumerate(tqdm(self.val_loader)):
 
+            data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
             image = data["image"]["optical"].to(self.device)
             B, C, T, H, W = image.shape
 

@@ -145,7 +145,8 @@ class Trainer:
 
         end_time = time.time()
         for batch_idx, data in enumerate(self.train_loader):
-
+            
+            data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
             image, target = data["image"], data["target"]
             image = image["optical"].to(self.device)
             target = target.to(self.device)

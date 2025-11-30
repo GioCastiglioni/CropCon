@@ -137,6 +137,7 @@ class SegEvaluator(Evaluator):
         )
         total_loss = 0
         for batch_idx, data in enumerate(tqdm(self.val_loader, desc=tag)):
+            data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
             image, target = data["image"], data["target"]
             if str(self.criterion) == "BalancedContrastiveLearning":
                 image = {"v1": image["optical"].to(self.device)}

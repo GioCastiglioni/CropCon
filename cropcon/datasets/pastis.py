@@ -15,6 +15,7 @@ import torch
 from einops import rearrange
 
 from cropcon.datasets.base import RawGeoFMDataset, temporal_subsampling
+from datetime import timedelta
 
 
 def prepare_dates(date_dict, reference_date):
@@ -140,11 +141,11 @@ class Pastis(RawGeoFMDataset):
         )
 
         folds_dict = {
-            "1": {"train": [1,2,3,4], "val": [5]},
-            "2": {"train": [2,3,4,5], "val": [1]},
-            "3": {"train": [3,4,5,1], "val": [2]},
-            "4": {"train": [4,5,1,2], "val": [3]},
-            "5": {"train": [5,1,2,3], "val": [4]},
+            "1": {"train": [1,2,3], "val": [4], "test": [5]},
+            "2": {"train": [2,3,4], "val": [5], "test": [1]},
+            "3": {"train": [3,4,5], "val": [1], "test": [2]},
+            "4": {"train": [4,5,1], "val": [2], "test": [3]},
+            "5": {"train": [5,1,2], "val": [3], "test": [4]},
             }
 
         assert split in ["train", "val"], "Split must be train or val"
@@ -152,14 +153,17 @@ class Pastis(RawGeoFMDataset):
             folds = folds_dict[str(fold_config)]["train"]
         elif split == "val":
             folds = folds_dict[str(fold_config)]["val"]
+        elif split == "test":
+            folds = folds_dict[str(fold_config)]["test"]
         else:
-            raise Exception("Split not supported. Try 'train' or 'val'.")
+            raise Exception("Split not supported. Try 'train', 'val' or 'test'.")
             
         self.modalities = ["s2", "aerial", "s1-asc"]
         self.nb_split = 1
 
         reference_date = "2018-09-01"
         self.reference_date = datetime(*map(int, reference_date.split("-")))
+        self.ref_doy = self.reference_date.timetuple().tm_yday
 
         self.meta_patch = gpd.read_file(
             os.path.join(self.root_path, "metadata.geojson")
@@ -188,6 +192,7 @@ class Pastis(RawGeoFMDataset):
         """
         line = self.meta_patch.iloc[i // (self.nb_split * self.nb_split)]
         name = line["ID_PATCH"]
+        lat, lon = self.get_tile_centroid(line["TILE"])
         part = i % (self.nb_split * self.nb_split)
         label = torch.from_numpy(
             np.load(
@@ -384,13 +389,22 @@ class Pastis(RawGeoFMDataset):
 
             metadata = output["s2_dates"][optical_indexes].float()
 
+            doy_norm = ((metadata + self.ref_doy - 1) % 365.25) / 365.25
+            lat_norm = torch.tensor(lat, dtype=torch.float32) / 90.0
+            lon_norm = torch.tensor(lon, dtype=torch.float32) / 180.0
+
         return {
             "image": {
                 "optical": optical_ts.to(torch.float32),
                 "sar": sar_ts.to(torch.float32),
             },
             "target": output["label"].to(torch.int64),
-            "metadata": metadata,
+            "metadata": {
+                "time_linear": metadata,
+                "doy": doy_norm,
+                "lat": lat_norm,
+                "lon": lon_norm
+            }
         }
 
     def __len__(self) -> int:

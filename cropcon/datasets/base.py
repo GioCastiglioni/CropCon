@@ -4,6 +4,7 @@ import torch
 from torch.utils.data import Dataset, Subset
 
 from cropcon.engine.data_preprocessor import Preprocessor
+import mgrs
 
 
 class RawGeoFMDataset(Dataset):
@@ -83,6 +84,21 @@ class RawGeoFMDataset(Dataset):
 
         if not os.path.exists(self.root_path):
             self.download(self)
+    
+    def get_tile_centroid(self, tile_id):
+        """
+        '31TFJ' -> (Lat, Lon)
+        """
+        m = mgrs.MGRS()
+        tile_id = tile_id.upper()
+        clean_id = tile_id[1:] if tile_id.startswith('T') else tile_id
+        
+        try:
+            lat, lon = m.toLatLon(clean_id) 
+            return lat, lon
+        except Exception as e:
+            print(f"Error parseando tile {tile_id}: {e}")
+            return 0.0, 0.0
 
     def __len__(self) -> int:
         """Returns the length of the dataset.

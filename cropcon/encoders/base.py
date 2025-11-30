@@ -64,6 +64,7 @@ class Encoder(nn.Module):
         pyramid_output: bool,
         encoder_weights: str | Path,
         download_url: str,
+        positional_encoding: str | None = "normal"
     ) -> None:
         """Initialize the Encoder.
 
@@ -96,6 +97,7 @@ class Encoder(nn.Module):
 
         self.pyramid_output = pyramid_output
         self.download_url = download_url
+        self.positional_encoding = positional_encoding
 
         # download_model if necessary
         self.download_model()
