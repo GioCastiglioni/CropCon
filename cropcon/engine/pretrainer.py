@@ -13,6 +13,13 @@ from torch.utils.data import DataLoader
 
 from cropcon.utils.logger import RunningAverageMeter, sec_to_hm
 from cropcon.utils.utils import LeJEPATransform as ConsistentTransform
+from torch.distributed.nn import all_reduce as functional_all_reduce
+def all_reduce(x, op="AVG"):
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        op_enum = torch.distributed.ReduceOp.AVG if op.upper() == "AVG" else torch.distributed.ReduceOp.SUM
+        return functional_all_reduce(x, op=op_enum)
+    else:
+        return x
 
 class Trainer:
     def __init__(
@@ -98,6 +105,19 @@ class Trainer:
 
         self.n_global = n_global
         self.n_local = n_local
+        
+        if not hasattr(self.criterion, "global_step_views"):
+            self.criterion.register_buffer("global_step_views", torch.zeros((), dtype=torch.long, device=self.device))
+        self._generator = None
+        self._generator_device = None
+
+    def _get_generator(self, device, seed):
+        """Get or create generator for given device and seed."""
+        if self._generator is None or self._generator_device != device:
+            self._generator = torch.Generator(device=device)
+            self._generator_device = device
+        self._generator.manual_seed(seed)
+        return self._generator
 
     
     def train(self) -> None:
@@ -153,7 +173,17 @@ class Trainer:
             ):
                 global_views = []
                 local_views = []
-                local_indexes = torch.linspace(0, T-1, self.n_local//self.n_global).long()
+                with torch.no_grad():
+                    # Synchronize global_step_views across all ranks
+                    global_step_sync = all_reduce(self.criterion.global_step_views.clone(), op="MAX")
+                    seed = global_step_sync.item()
+
+                    # Get reusable generator
+                    g = self._get_generator(self.device, seed)
+
+                    local_indexes = torch.randint(0, T, (self.n_local//self.n_global,), generator=g, device=self.device).long()
+                    self.criterion.global_step_views.add_(1)
+
                 for view in views:
                     out, feature_maps, _, _ = self.model.module.encoder(view, batch_positions=data["metadata"])
                     out = self.model.module.encoder.projector(out)
@@ -327,7 +357,6 @@ class Trainer:
             torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
             return
         checkpoint = self.get_checkpoint(epoch) if checkpoint is None else checkpoint
-        checkpoint = checkpoint["model"]
         suffix = "_best" if is_best else f"{epoch}_final" if is_final else f"{epoch}"
         checkpoint_path = os.path.join(self.exp_dir, f"checkpoint_{suffix}.pth")
         torch.save(checkpoint, checkpoint_path)
