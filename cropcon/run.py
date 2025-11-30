@@ -203,12 +203,18 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Projector parameters: {sum(p.numel() for name, p in decoder.encoder.named_parameters() if ('projector' in name))}")
     logger.info(f"Total parameters: {sum(p.numel() for p in decoder.parameters())}")
 
-    def params_extractor(model: nn.Module, encoder=False) -> iter:
+    def params_extractor(model: nn.Module, encoder=False, projector=False) -> iter:
         for name, param in model.named_parameters():
-            condition = ("encoder" in name)
-            condition = condition if encoder else not condition
-            if condition:
-                yield param
+            if encoder:
+                if projector:
+                    if "encoder" in name:
+                        yield param
+                else:
+                    if "encoder" in name and not "projector" in name:
+                        yield param
+            else:
+                if not "encoder" in name:
+                    yield param
 
     modalities = list(encoder.input_bands.keys())
     collate_fn = get_collate_fn(modalities)
@@ -325,7 +331,7 @@ def main(cfg: DictConfig) -> None:
                     prot_mlp.to(device),
                     device_ids=[local_rank],
                     output_device=local_rank,
-                    find_unused_parameters=cfg.finetune,
+                    find_unused_parameters=True,
                 )
                 views_mlp = BCLProj(
                     in_channels = decoder.dec_topology[0],
@@ -336,20 +342,20 @@ def main(cfg: DictConfig) -> None:
                     views_mlp.to(device),
                     device_ids=[local_rank],
                     output_device=local_rank,
-                    find_unused_parameters=cfg.finetune,
+                    find_unused_parameters=True,
                 )
             decoder = torch.nn.parallel.DistributedDataParallel(
                     decoder,
                     device_ids=[local_rank],
                     output_device=local_rank,
-                    find_unused_parameters=cfg.finetune,
+                    find_unused_parameters=True,
                 )
         else:
             decoder = torch.nn.parallel.DistributedDataParallel(
                 decoder,
                 device_ids=[local_rank],
                 output_device=local_rank,
-                find_unused_parameters=cfg.finetune,
+                find_unused_parameters=True,
             )
             criterion = decoder.module.criterion
 
@@ -361,7 +367,7 @@ def main(cfg: DictConfig) -> None:
                 params.append({'params': criterion.prot_mlp.parameters(), 'lr': cfg.optimizer.lr})
                 params.append({'params': criterion.views_mlp.parameters(), 'lr': cfg.optimizer.lr})
         if cfg.finetune:
-            params.append({'params': params_extractor(decoder.module, encoder=True), 'lr': cfg.optimizer.lr * cfg.ft_rate})
+            params.append({'params': params_extractor(decoder.module, encoder=True, projector=cfg.pretrain), 'lr': cfg.optimizer.lr * cfg.ft_rate})
 
         optimizer = instantiate(cfg.optimizer, params=None)
         optimizer = optimizer(params=params)
