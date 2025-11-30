@@ -878,7 +878,7 @@ class EppsPulley(UnivariateTest):
     """
 
     def __init__(
-        self, t_max: float = 3, n_points: int = 17, integration: str = "trapezoid"
+        self, t_max: float = 5, n_points: int = 17, integration: str = "trapezoid"
     ):
         super().__init__()
         assert n_points % 2 == 1
