@@ -493,7 +493,7 @@ class RandomCropNoTarget(BasePreprocessor):
         i, j, h, w = self.get_params(data=data)
 
         for k, v in data["image"].items():
-            data["image"][k] = TF.crop(v, i, j, h, w)
+            data["image"][k] = TF.crop(v, i, j, h, w).contiguous()
 
         return data
 
@@ -504,7 +504,7 @@ class RandomCropNoTarget(BasePreprocessor):
     
 class CenterCropNoTarget(BasePreprocessor):
     def __init__(
-        self, size: int | Sequence[int], pad_if_needed: bool = False, **meta
+        self, pad_if_needed: bool = False, **meta
     ) -> None:
         super().__init__()
 
@@ -553,7 +553,6 @@ class CenterCropNoTarget(BasePreprocessor):
     def __call__(
         self, data: dict[str, torch.Tensor | dict[str, torch.Tensor]]
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
-        self.check_size(data)
 
         if self.pad_if_needed:
             data = self.check_pad(data)
@@ -561,7 +560,7 @@ class CenterCropNoTarget(BasePreprocessor):
         i, j, h, w = self.get_params(data=data)
 
         for k, v in data["image"].items():
-            data["image"][k] = TF.crop(v, i, j, h, w)
+            data["image"][k] = TF.crop(v, i, j, h, w).contiguous()
 
         return data
 
