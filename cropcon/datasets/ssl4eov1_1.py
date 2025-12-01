@@ -1,4 +1,3 @@
-import zarr
 import xarray as xr
 import os
 from datetime import datetime
@@ -120,7 +119,7 @@ class SSL4EO(RawGeoFMDataset):
         file_idx = i // 64
         patch_idx = i % 64
 
-        path = os.path.join(self.root_path, f"{self.split}/{self.samples[file_idx]}")
+        path = os.path.join(self.root_path, f"{self.split}/{self.modalities[0]}/{self.samples[file_idx][:-4]}")
 
         ds = xr.open_zarr(path)
         optical_ts = torch.from_numpy(ds["bands"][patch_idx].transpose("band", "time", "y", "x").values).type(torch.float32)
