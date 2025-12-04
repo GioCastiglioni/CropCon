@@ -318,6 +318,8 @@ class Trainer:
         if "model" in model_dict:
             if any(pretrain_key in k for k in model_dict["model"]):
                 self.logger.info(f"Loading pre-trained weights from {resume_path}...")
+                model_dict["model"]["conv_seg.weight"] = self.model.module.conv_seg.weight.data
+                model_dict["model"]["conv_seg.bias"] = self.model.module.conv_seg.bias.data
                 self.model.module.load_state_dict(model_dict["model"])
                 self.start_epoch = 0
                 self.logger.info("Pre-trained weights loaded successfully. Deleting projection head from pretraining.")
