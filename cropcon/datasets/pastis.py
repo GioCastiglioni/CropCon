@@ -148,7 +148,7 @@ class Pastis(RawGeoFMDataset):
             "5": {"train": [5,1,2], "val": [3], "test": [4]},
             }
 
-        assert split in ["train", "val"], "Split must be train or val"
+        assert split in ["train", "val", "test"], "Split must be train or val or test"
         if split == "train":
             folds = folds_dict[str(fold_config)]["train"]
         elif split == "val":
