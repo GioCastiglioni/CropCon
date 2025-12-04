@@ -417,13 +417,14 @@ def main(cfg: DictConfig) -> None:
 
     if not cfg.pretrain:
         if cfg.dataset.support_test:
-            del decoder.encoder.projector
-            decoder = torch.nn.parallel.DistributedDataParallel(
-                decoder,
-                device_ids=[local_rank],
-                output_device=local_rank,
-                find_unused_parameters=True,
-            )
+            if not isinstance(decoder, torch.nn.parallel.DistributedDataParallel):
+                del decoder.encoder.projector
+                decoder = torch.nn.parallel.DistributedDataParallel(
+                    decoder,
+                    device_ids=[local_rank],
+                    output_device=local_rank,
+                    find_unused_parameters=True,
+                )
             criterion = instantiate(cfg.criterion)
             criterion = criterion.to(device)
             # Evaluation
