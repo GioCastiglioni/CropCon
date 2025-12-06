@@ -437,7 +437,7 @@ class SSL4EO_DINO_Encoder(Encoder):
     def load_encoder_weights(self, logger: Logger, from_scratch: bool = False) -> None:
         if not from_scratch:
             checkpoint = torch.load(self.encoder_weights, map_location="cpu", weights_only=False)
-            pretrained_model = checkpoint["teacher"]
+            pretrained_model = checkpoint["student"]
             pretrained_model = {
                 k.replace("backbone.", ""): v for k, v in pretrained_model.items()
             }
