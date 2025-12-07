@@ -34,9 +34,9 @@ class Sen1Floods11(RawGeoFMDataset):
         data_max: dict[str, list[str]],
         download_url: str,
         auto_download: bool,
+        gcs_bucket: str,
         support_test: bool,
         fold_config: int,
-        gcs_bucket: str,
     ):
         """Initialize the Sen1Floods11 dataset.
         Link: https://github.com/cloudtostreet/Sen1Floods11
@@ -88,10 +88,10 @@ class Sen1Floods11(RawGeoFMDataset):
             data_std=data_std,
             data_min=data_min,
             data_max=data_max,
-            support_test=support_test,
-            fold_config=fold_config,
             download_url=download_url,
             auto_download=auto_download,
+            fold_config=fold_config,
+            support_test=support_test
         )
 
         self.root_path = root_path
@@ -125,15 +125,13 @@ class Sen1Floods11(RawGeoFMDataset):
         )
 
         self.metadata = geopandas.read_file(metadata_file)
+        self.metadata[['approx_lat', 'approx_lon']] = self.metadata.apply(self.get_centroid, axis=1)
 
         with open(split_file) as f:
             file_list = f.readlines()
 
         file_list = [f.rstrip().split(",") for f in file_list]
 
-        self.s1_image_list = [
-            os.path.join(data_root, "S1Hand", f[0]) for f in file_list
-        ]
         self.s2_image_list = [
             os.path.join(data_root, "S2Hand", f[0].replace("S1Hand", "S2Hand"))
             for f in file_list
@@ -143,72 +141,57 @@ class Sen1Floods11(RawGeoFMDataset):
         ]
 
     def __len__(self):
-        return len(self.s1_image_list)
+        return len(self.s2_image_list)
 
-    # def _get_date(self, index):
-    #     file_name = self.s2_image_list[index]
-    #     location = os.path.basename(file_name).split("_")[0]
-    #     if self.metadata[self.metadata["location"] == location].shape[0] != 1:
-    #         date = pd.to_datetime("13-10-1998", dayfirst=True)
-    #     else:
-    #         date = pd.to_datetime(
-    #             self.metadata[self.metadata["location"] == location]["s2_date"].item()
-    #         )
-    #     date_np = np.zeros((1, 3))
-    #     date_np[0, 0] = date.year
-    #     date_np[0, 1] = date.dayofyear - 1  # base 0
-    #     date_np[0, 2] = date.hour
-    #     return date_np
+    def get_centroid(self, row):
+        coords = row['geometry'].centroid
+        return pd.Series([coords.y, coords.x])
 
-    def _get_date(self, index, reference_date_str="13-10-1998"):
-        # Use the provided reference date (using day-first format)
+    def _get_metadata(self, index, reference_date_str="2016-08-12"):
         reference_date = pd.to_datetime(reference_date_str, dayfirst=True)
         file_name = self.s2_image_list[index]
         location = os.path.basename(file_name).split("_")[0]
+        location = "Cambodia" if location == "Mekong" else location
         
-        # If there is not exactly one metadata entry for the location, use the reference date
-        if self.metadata[self.metadata["location"] == location].shape[0] != 1:
-            date = reference_date
-        else:
-            # Otherwise, get the date from metadata
-            date = pd.to_datetime(
-                self.metadata[self.metadata["location"] == location]["s2_date"].item()
-            )
+        date = pd.to_datetime(
+            self.metadata[self.metadata["location"] == location]["s2_date"].item()
+        )
+
+        doy = date.timetuple().tm_yday
+        lat = self.metadata[self.metadata["location"] == location]["approx_lat"].item()
+        lon = self.metadata[self.metadata["location"] == location]["approx_lon"].item()
         
-        # Calculate the difference in days from the reference_date
         delta_days = (date - reference_date).days
         
-        # Return as a numpy array, as needed by your positional encoding pipeline
-        return torch.tensor([delta_days])
+        return delta_days, doy, lat, lon
 
     def __getitem__(self, index):
         with rasterio.open(self.s2_image_list[index]) as src:
             s2_image = src.read()
 
-        with rasterio.open(self.s1_image_list[index]) as src:
-            s1_image = src.read()
-            # Convert the missing values (clouds etc.)
-            s1_image = np.nan_to_num(s1_image)
-
         with rasterio.open(self.target_list[index]) as src:
             target = src.read(1)
 
-        timestamp = self._get_date(index)
+        timestamp, doy, lat, lon = self._get_metadata(index)
+
+        doy_norm = torch.tensor([doy], dtype=torch.float32) / 365.25
+        lat_norm = torch.tensor(lat, dtype=torch.float32) / 90.0
+        lon_norm = torch.tensor(lon, dtype=torch.float32) / 180.0
 
         s2_image = torch.from_numpy(s2_image).float()
-        s1_image = torch.from_numpy(s1_image).float()
         target = torch.from_numpy(target).long()
 
         output = {
             "image": {
                 "optical": s2_image.unsqueeze(1),
-                "sar": s1_image.unsqueeze(1),
             },
             "target": target,
-            "metadata": timestamp
-            # "metadata": {
-            #     "timestamp": timestamp,
-            # },
+            "metadata": {
+                "time_linear": timestamp,
+                "doy": doy_norm,
+                "lat": lat_norm,
+                "lon": lon_norm
+            }
         }
 
         return output
