@@ -10,7 +10,7 @@ fold_config: 1
 
 img_size: 512
 multi_temporal: False
-multi_modal: True
+multi_modal: False
 
 ignore_index: -1
 num_classes: 2

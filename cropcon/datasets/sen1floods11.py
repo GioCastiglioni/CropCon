@@ -178,16 +178,16 @@ class Sen1Floods11(RawGeoFMDataset):
         lat_norm = torch.tensor(lat, dtype=torch.float32) / 90.0
         lon_norm = torch.tensor(lon, dtype=torch.float32) / 180.0
 
-        s2_image = torch.from_numpy(s2_image).float()
+        s2_image = torch.from_numpy(s2_image).float().unsqueeze(1)
         target = torch.from_numpy(target).long()
 
         output = {
             "image": {
-                "optical": s2_image.unsqueeze(1),
+                "optical": s2_image,
             },
             "target": target,
             "metadata": {
-                "time_linear": timestamp,
+                "time_linear": torch.tensor([timestamp], dtype=torch.float32),
                 "doy": doy_norm,
                 "lat": lat_norm,
                 "lon": lon_norm
