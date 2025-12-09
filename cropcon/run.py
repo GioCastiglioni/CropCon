@@ -205,16 +205,17 @@ def main(cfg: DictConfig) -> None:
 
     def params_extractor(model: nn.Module, encoder=False, projector=False) -> iter:
         for name, param in model.named_parameters():
-            if encoder:
-                if projector:
-                    if "encoder" in name:
-                        yield param
+            if not "tmap" in name:
+                if encoder:
+                    if projector:
+                        if "encoder" in name:
+                            yield param
+                    else:
+                        if "encoder" in name and not "projector" in name:
+                            yield param
                 else:
-                    if "encoder" in name and not "projector" in name:
+                    if not "encoder" in name:
                         yield param
-            else:
-                if not "encoder" in name:
-                    yield param
 
     modalities = list(encoder.input_bands.keys())
     collate_fn = get_collate_fn(modalities)
@@ -358,7 +359,7 @@ def main(cfg: DictConfig) -> None:
             )
             criterion = decoder.module.criterion
 
-        params = []
+        params = [{'params': decoder.module.encoder.tmap.parameters(), 'lr': cfg.optimizer.lr}]
 
         if not cfg.pretrain: 
             params.append({'params': params_extractor(decoder.module, encoder=False), 'lr': cfg.optimizer.lr})
@@ -366,7 +367,7 @@ def main(cfg: DictConfig) -> None:
                 params.append({'params': criterion.prot_mlp.parameters(), 'lr': cfg.optimizer.lr})
                 params.append({'params': criterion.views_mlp.parameters(), 'lr': cfg.optimizer.lr})
         if cfg.finetune:
-            params.append({'params': params_extractor(decoder.module, encoder=True, projector=cfg.pretrain), 'lr': cfg.optimizer.lr * cfg.ft_rate})
+            params.append({'params': params_extractor(decoder.module, encoder=True, projector=cfg.pretrain), 'lr': cfg.optimizer.lr})
 
         optimizer = instantiate(cfg.optimizer, params=None)
         optimizer = optimizer(params=params)
