@@ -144,7 +144,7 @@ class SegEvaluator(Evaluator):
                 target = target.to(self.device)
                 logits = model(image["v1"], batch_positions=data["metadata"])
                 
-                loss_tensor = F.cross_entropy(logits, target)
+                loss_tensor = self.criterion.LC(logits, target)
                 torch.distributed.all_reduce(loss_tensor, op=torch.distributed.ReduceOp.SUM)
                 total_loss += loss_tensor.item()
                 

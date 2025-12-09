@@ -548,25 +548,6 @@ class SupConLoss(torch.nn.Module):
 
     def __str__(self):
         return 'SupConLoss'
-    
-
-class LogitCompensation(nn.Module):
-    def __init__(self, distribution):
-        super(LogitCompensation, self).__init__()
-        
-        priors = torch.tensor(distribution).float()
-        logit_adj = torch.log(priors + 1e-9) 
-        self.register_buffer('logit_adj', logit_adj)
-
-    def forward(self, logits, targets):
-        
-        #logits = logits + self.logit_adj.view(1, -1, 1, 1)
-        loss = F.cross_entropy(logits, targets)
-        
-        return loss
-    
-    def __str__(self):
-        return 'LogitCompensation'
 
 
 class BCLSegmentationLoss(nn.Module):
@@ -682,7 +663,7 @@ class BalancedContrastiveLearning(nn.Module):
         self.hidden_d = hidden_d
         self.out_d = out_d
 
-        self.LC = LogitCompensation(self.distribution)
+        self.LC = torch.nn.CrossEntropyLoss(ignore_index=self.ignore_index)
         self.BCL = BCLSegmentationLoss(
             self.num_classes, 
             tau=self.temperature,
@@ -690,9 +671,6 @@ class BalancedContrastiveLearning(nn.Module):
             max_context=32768,
             ignore_index=self.ignore_index
         )
-
-        #self.views_mlp(in_channels, hidden_d, out_d)
-        #self.prot_mlp(in_channels, hidden_d, out_d)
 
     def forward(self, logits, z2, z3, targets, targets2, targets3, prototypes):
 
