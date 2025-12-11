@@ -14,7 +14,7 @@ import rasterio
 import torch
 from einops import rearrange
 
-from cropcon.datasets.base import RawGeoFMDataset, temporal_subsampling
+from cropcon.datasets.base import RawGeoFMDataset
 from datetime import timedelta
 
 
@@ -358,45 +358,30 @@ class Pastis(RawGeoFMDataset):
                     ][random_indices]
 
         optical_ts = rearrange(output["s2"], "t c h w -> c t h w")
-        sar_ts = rearrange(output["s1-asc"], "t c h w -> c t h w")
 
         if self.multi_temporal == 1:
             # we only take the last frame
             optical_indexes = torch.Tensor([-1]).long()
             optical_ts = optical_ts[:, optical_indexes]
-            sar_indexes = torch.Tensor([-1]).long()
-            sar_ts = sar_ts[:, sar_indexes]
 
             metadata = torch.Tensor([output["s2_dates"][optical_indexes].float()])
         else:
             # select evenly spaced samples
-            optical_whole_range_indexes = torch.linspace(
-                0, optical_ts.shape[1] - 1, 35, dtype=torch.long
+            optical_indexes = torch.linspace(
+                0, optical_ts.shape[1] - 1, self.multi_temporal, dtype=torch.long
             )
-            optical_indexes = temporal_subsampling(
-                self.multi_temporal, optical_whole_range_indexes
-                )
-
-            sar_whole_range_indexes = torch.linspace(
-                0, sar_ts.shape[1] - 1, 35, dtype=torch.long
-            )
-            sar_indexes = temporal_subsampling(
-                self.multi_temporal, sar_whole_range_indexes
-                )
 
             optical_ts = optical_ts[:, optical_indexes]
-            sar_ts = sar_ts[:, sar_indexes]
 
             metadata = output["s2_dates"][optical_indexes].float()
 
-            doy_norm = ((metadata + self.ref_doy - 1) % 365.25) / 365.25
+            doy_norm = ((metadata + self.ref_doy - 1) % 365) / 365
             lat_norm = torch.tensor(lat, dtype=torch.float32) / 90.0
             lon_norm = torch.tensor(lon, dtype=torch.float32) / 180.0
 
         return {
             "image": {
                 "optical": optical_ts.to(torch.float32),
-                "sar": sar_ts.to(torch.float32),
             },
             "target": output["label"].to(torch.int64),
             "metadata": {
