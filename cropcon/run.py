@@ -298,7 +298,7 @@ def main(cfg: DictConfig) -> None:
             batch_size=cfg.batch_size,
             num_workers=cfg.num_workers,
             pin_memory=True,
-            persistent_workers=True, #causes memory leak
+            persistent_workers=False, #causes memory leak
             worker_init_fn=seed_worker,
             generator=get_generator(cfg.seed),
             drop_last=True,
@@ -311,7 +311,7 @@ def main(cfg: DictConfig) -> None:
             batch_size=cfg.test_batch_size,
             num_workers=cfg.test_num_workers,
             pin_memory=True,
-            persistent_workers=True, #causes memory leak
+            persistent_workers=False, #causes memory leak
             worker_init_fn=seed_worker,
             # generator=g,
             drop_last=True,
@@ -445,7 +445,7 @@ def main(cfg: DictConfig) -> None:
                 batch_size=cfg.test_batch_size,
                 num_workers=cfg.test_num_workers,
                 pin_memory=True,
-                persistent_workers=True, #causes memory leak
+                persistent_workers=False, #causes memory leak
                 drop_last=True,
                 collate_fn=collate_fn,
             )

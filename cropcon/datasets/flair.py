@@ -1,6 +1,10 @@
 import pandas as pd
 import rasterio
 import torch
+from datetime import datetime
+from pyproj import Transformer
+import json
+import os
 
 from cropcon.datasets.base import RawGeoFMDataset
 
@@ -79,7 +83,15 @@ class FLAIR(RawGeoFMDataset):
             fold_config=fold_config
         )
 
+        with open(f"{self.root_path}/flair-1_metadata_aerial.json", "r") as f:
+            self.metadata_dict = json.load(f)
+        
+        self.reference_date = datetime(2021, 1, 1) 
+        self.ref_doy = self.reference_date.timetuple().tm_yday
+
         self.paths = pd.read_csv(f"{root_path}/csv_full/flair-1-paths-{split}.csv", header=None)
+
+        self.transformer = Transformer.from_crs("epsg:2154", "epsg:4326", always_xy=True)
 
     def __getitem__(self, i: int) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         """Get the item at index i.
@@ -92,8 +104,25 @@ class FLAIR(RawGeoFMDataset):
             {"image": {"optical": torch.Tensor},
             "target": torch.Tensor}.
         """
-        img_path = self.root_path + (self.paths.iloc[i, 0].split("data")[1] if self.split == "test" else self.paths.iloc[i, 0][2:])
+        path_raw = self.paths.iloc[i, 0]
+        img_path = self.root_path + (path_raw.split("data")[1] if self.split == "test" else path_raw[2:])
         label_path = self.root_path + (self.paths.iloc[i, 1].split("data")[1] if self.split == "test" else self.paths.iloc[i, 1][2:])
+
+        filename = os.path.basename(img_path)
+        img_id = os.path.splitext(filename)[0]
+        meta_info = self.metadata_dict[img_id]
+        x_proj = meta_info["patch_centroid_x"]
+        y_proj = meta_info["patch_centroid_y"]
+
+        lon, lat = self.transformer.transform(x_proj, y_proj)
+        lat_norm = torch.tensor(lat / 90.0, dtype=torch.float32)
+        lon_norm = torch.tensor(lon / 180.0, dtype=torch.float32)
+
+        date_str = meta_info["date"]
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        time_linear = torch.tensor([(date_obj - self.reference_date).days]).long()
+        doy = date_obj.timetuple().tm_yday
+        doy_norm = torch.tensor([(doy - 1) / 365.25], dtype=torch.float32)
 
         output = {}
 
@@ -103,6 +132,13 @@ class FLAIR(RawGeoFMDataset):
         with rasterio.open(label_path) as f:
             full_labels = torch.LongTensor(f.read()).squeeze() - 1
             output["target"] = torch.minimum(full_labels, torch.ones_like(full_labels)*12)
+
+        output["metadata"] = {
+            "time_linear": time_linear,
+            "doy": doy_norm,
+            "lat": lat_norm,
+            "lon": lon_norm
+        }
 
         return output
 
