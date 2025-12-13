@@ -5,7 +5,7 @@ import time
 import urllib
 from glob import glob
 from typing import Sequence, Tuple
-import datetime
+from datetime import datetime
 
 import numpy as np
 import tifffile as tiff
