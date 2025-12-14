@@ -132,71 +132,117 @@ class Evaluator:
 
         self.class_colors = np.array([
             [0, 0, 0],         # Background (Fondo)
-            [0, 150, 0],       # ACELGA (Verde oscuro)
-            [255, 0, 100],     # BETARRAGA (Magenta/Remolacha)
-            [100, 200, 50],    # BROCOLI (Verde claro)
-            [255, 165, 0],     # CEBOLLA (Naranja)
-            [255, 140, 0],     # CEBOLLA TEMPRANA (Naranja oscuro)
-            [170, 0, 170],     # CEBOLLIN (Púrpura)
-            [255, 255, 0],     # CHOCLO (Amarillo brillante)
-            [0, 255, 0],       # CILANTRO (Verde brillante)
-            [200, 200, 200],   # COLIFLOR (Gris claro)
-            [0, 100, 0],       # ESPINACA (Verde muy oscuro)
-            [255, 0, 0],       # FRUTILLA (Rojo puro)
-            [50, 255, 100],    # LECHUGA (Verde pálido)
-            [255, 160, 120],   # MELON (Durazno/Salmón)
-            [139, 69, 19],     # PAPA (Marrón tierra)
-            [255, 69, 0],      # PIMIENTO (Rojo anaranjado)
-            [200, 0, 200],     # POROTO GRANADO (Magenta oscuro)
-            [0, 128, 0],       # POROTO VERDE (Verde medio)
-            [255, 10, 50],     # RADICCIO (Rojo intenso/Carmesí)
-            [255, 192, 203],   # SANDÍA (Rosa claro)
-            [255, 50, 50],     # TOMATE CONSUMO FRESCO (Rojo medio)
-            [200, 0, 0],       # TOMATE INDUSTRIAL (Rojo muy oscuro)
-            [218, 165, 32],    # ZAPALLO GUARDA (Dorado oscuro)
-            [128, 128, 0],     # ZAPALLO ITALIANO (Verde oliva)
-            [255, 99, 71],     # AJI (Rojo coral)
-            [255, 255, 224],   # AJO (Amarillo pálido/Marfil)
-            [255, 175, 0],     # CEBOLLA DE GUARDA (Naranja medio)
-            [255, 153, 51],    # CEBOLLA INTERMEDIA O PASCUALINA (Mandarina)
-            [0, 255, 255],     # PEPINO DE ENSALADA (Cian)
-            [128, 0, 128],     # REPOLLO (Púrpura oscuro)
-            [173, 255, 47]     # ZAPALLO TEMPRANO (Verde Chartreuse)
+            [255, 105, 180],   # GUAYABO (Rosa Chicle)
+            [139, 69, 19],     # HIGUERA (Marrón Tierra)
+            [255, 255, 0],     # LIMA (Amarillo Brillante)
+            [255, 165, 0],     # MANGO (Naranja)
+            [255, 140, 0],     # NARANJO (Naranja Oscuro)
+            [205, 133, 63],    # NISPERO (Bronceado)
+            [255, 192, 203],   # POMELO (Rosa Claro)
+            [255, 175, 0],     # TANGELO (Naranja Medio)
+            [240, 255, 240],   # ALMENDRO (Blanco Rocío)
+            [128, 0, 128],     # CHIRIMOYO (Púrpura)
+            [255, 0, 0],       # GRANADO (Rojo Puro)
+            [255, 222, 173],   # JOJOBA (Melocotón)
+            [154, 205, 50],    # LIMONERO (Verde Limón)
+            [255, 153, 51],    # MANDARINO (Mandarina)
+            [184, 134, 11],    # MEMBRILLO (Oro Oscuro)
+            [255, 99, 71],     # NECTARINO (Rojo Coral)
+            [160, 82, 45],     # NOGAL (Siena)
+            [128, 128, 0],     # OLIVO (Verde Oliva)
+            [0, 100, 0],       # PALTO (Verde Oscuro)
+            [255, 20, 147],    # TUNA (Rosa Oscuro)
+            [138, 43, 226],    # VID DE MESA (Azul Violeta)
+            [70, 130, 180],    # ARANDANO AMERICANO (Azul Acero)
+            [220, 20, 60],     # CEREZO (Carmesí)
+            [173, 216, 230],   # CIRUELO JAPONES (Azul Claro)
+            [244, 164, 96],    # DAMASCO (Arena)
+            [210, 105, 30],    # DURAZNERO CONSUMO FRESCO (Chocolate)
+            [255, 215, 0],     # DURAZNERO TIPO CONSERVERO (Oro)
+            [199, 21, 133],    # FRAMBUESA (Rosa Oscuro)
+            [255, 69, 0],      # PAPAYO (Rojo Anaranjado)
+            [189, 183, 107],   # PECANA (Caqui Oscuro)
+            [0, 255, 0],       # PERAL (Verde Brillante)
+            [148, 0, 211],     # CAQUI (Violeta Oscuro)
+            [100, 149, 237],   # CIRUELO EUROPEO (Azul Maíz)
+            [255, 248, 220],   # FEIJOA (Blanco Crema)
+            [0, 255, 255],     # KIWI (Cian)
+            [218, 165, 32],    # LUCUMO (Dorado)
+            [255, 0, 100],     # MANZANO ROJO (Rojo Vivo)
+            [178, 34, 34],     # NUEZ DE MACADAMIA (Ladrillo)
+            [64, 224, 208],    # PISTACHO (Turquesa)
+            [0, 128, 0],       # HARDY KIWI O BABY KIWI (Verde Medio)
+            [128, 0, 0],       # MORAS CULTIVADAS E HIBRIDOS (Marrón Oscuro)
+            [0, 0, 139],       # PALMA (Azul Oscuro)
+            [192, 192, 192],   # PLUOTS (Plata)
+            [165, 42, 42],     # CASTAÑO (Marrón Rojizo)
+            [255, 0, 255],     # GROSELLA (Fucsia)
+            [176, 196, 222],   # GUINDO AGRIO (Azul Pizarra)
+            [0, 200, 0],       # MAQUI (Verde Bosque)
+            [255, 0, 200],     # MURTILLA (Rosa Cálido)
+            [255, 10, 50],     # ZARZAPARRILLA ROJA (Rojo Carmesí)
+            [160, 200, 100],   # MOSQUETA (Verde Salvia)
+            [100, 0, 200],     # MICHAY (Índigo)
+            [200, 100, 0],     # CRANBERRY (Marrón Anaranjado)
+            [255, 255, 100]    # MARACUYA (Amarillo Suave)
         ], dtype=np.uint8)
 
         self.class_labels = [
-            "Background",
-            "ACELGA",
-            "BETARRAGA",
-            "BROCOLI",
-            "CEBOLLA",
-            "CEBOLLA TEMPRANA",
-            "CEBOLLIN",
-            "CHOCLO",
-            "CILANTRO",
-            "COLIFLOR",
-            "ESPINACA",
-            "FRUTILLA",
-            "LECHUGA",
-            "MELON",
-            "PAPA",
-            "PIMIENTO",
-            "POROTO GRANADO",
-            "POROTO VERDE",
-            "RADICCIO",
-            "SANDÍA",
-            "TOMATE CONSUMO FRESCO",
-            "TOMATE INDUSTRIAL",
-            "ZAPALLO GUARDA",
-            "ZAPALLO ITALIANO",
-            "AJI",
-            "AJO",
-            "CEBOLLA DE GUARDA",
-            "CEBOLLA INTERMEDIA O PASCUALINA",
-            "PEPINO DE ENSALADA",
-            "REPOLLO",
-            "ZAPALLO TEMPRANO"
-        ]
+    "Background",
+    "GUAYABO",
+    "HIGUERA",
+    "LIMA",
+    "MANGO",
+    "NARANJO",
+    "NISPERO",
+    "POMELO",
+    "TANGELO",
+    "ALMENDRO",
+    "CHIRIMOYO",
+    "GRANADO",
+    "JOJOBA",
+    "LIMONERO",
+    "MANDARINO",
+    "MEMBRILLO",
+    "NECTARINO",
+    "NOGAL",
+    "OLIVO",
+    "PALTO",
+    "TUNA",
+    "VID DE MESA",
+    "ARANDANO AMERICANO",
+    "CEREZO",
+    "CIRUELO JAPONES",
+    "DAMASCO",
+    "DURAZNERO CONSUMO FRESCO",
+    "DURAZNERO TIPO CONSERVERO",
+    "FRAMBUESA",
+    "PAPAYO",
+    "PECANA",
+    "PERAL",
+    "CAQUI",
+    "CIRUELO EUROPEO",
+    "FEIJOA",
+    "KIWI",
+    "LUCUMO",
+    "MANZANO ROJO",
+    "NUEZ DE MACADAMIA",
+    "PISTACHO",
+    "HARDY KIWI O BABY KIWI",
+    "MORAS CULTIVADAS E HIBRIDOS",
+    "PALMA",
+    "PLUOTS",
+    "CASTANO",
+    "GROSELLA",
+    "GUINDO AGRIO",
+    "MAQUI",
+    "MURTILLA",
+    "ZARZAPARRILLA ROJA",
+    "MOSQUETA",
+    "MICHAY",
+    "CRANBERRY",
+    "MARACUYA"
+]
 
         priors = torch.tensor(distribution, dtype=torch.float32)
         self.log_priors = torch.log(priors).to(self.device)
