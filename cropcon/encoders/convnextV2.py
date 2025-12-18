@@ -151,7 +151,7 @@ class ConvNext(Encoder):
             model_dict = torch.load(self.encoder_weights, map_location="cpu", weights_only=False)["model"]
             model_dict = {k[8:]: v for k,v in model_dict.items() if k.startswith("encoder.")}
             self.load_state_dict(model_dict)
-            self.logger.info("Pre-trained weights loaded successfully.")
+            logger.info("Pre-trained weights loaded successfully.")
         else:pass
 
 
