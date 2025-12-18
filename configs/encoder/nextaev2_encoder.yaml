@@ -1,7 +1,7 @@
 _target_:  cropcon.encoders.convnextV2.ConvNext
-encoder_weights: null
+encoder_weights: ./pretrained_models/convnextv2_lesits.pth
 download_url: null
-input_size: ${dataset.img_size}
+input_size: 128
 multi_temporal: ${dataset.multi_temporal}
 topology: [80, 160, 320, 640]
 depths: [2, 2, 8, 2]

@@ -1,5 +1,5 @@
 _target_: cropcon.encoders.vit.VIT_Encoder
-encoder_weights: null
+encoder_weights: ./pretrained_models/vit_s_lesits.pth
 download_url: null
 
 embed_dim: 384
