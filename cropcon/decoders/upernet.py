@@ -37,6 +37,7 @@ class SegUPerNet(Decoder):
 
         self.model_name = "UPerNet"
         self.encoder = encoder
+        self.olmoearth = str(encoder) == "OlmoEarth"
         self.finetune = finetune
         self.feature_multiplier = feature_multiplier
 
@@ -310,10 +311,10 @@ class SegMTUPerNet(SegUPerNet):
         if not self.finetune:
             with torch.no_grad():
                 _, feat, _, att = self.encoder(img, batch_positions)
-                feat = self.collapse_T(feat, att)
+                if not self.olmoearth: feat = self.collapse_T(feat, att)
         else:
             _, feat, _, att = self.encoder(img, batch_positions)
-            feat = self.collapse_T(feat, att)
+            if not self.olmoearth: feat = self.collapse_T(feat, att)
 
         feat = self.neck(feat)
         feat = self._forward_feature(feat)

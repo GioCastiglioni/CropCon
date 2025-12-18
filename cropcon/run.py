@@ -355,7 +355,9 @@ def main(cfg: DictConfig) -> None:
             )
             criterion = decoder.module.criterion
 
-        params = [{'params': decoder.module.encoder.tmap.parameters(), 'lr': cfg.optimizer.lr}]
+        params=[]
+        if str(decoder.module.encoder) != "OlmoEarth":
+            params.append({'params': decoder.module.encoder.tmap.parameters(), 'lr': cfg.optimizer.lr})
 
         if not cfg.pretrain: 
             params.append({'params': params_extractor(decoder.module, encoder=False), 'lr': cfg.optimizer.lr})
