@@ -175,12 +175,8 @@ def main(cfg: DictConfig) -> None:
 
     encoder: Encoder = instantiate(cfg.encoder)
     if train_run:
-        if cfg.from_scratch and cfg.finetune:
-            encoder.load_encoder_weights(logger, from_scratch=True)
-            logger.info(f"Built {encoder.model_name} from scratch.")
-        else:
-            encoder.load_encoder_weights(logger)
-            logger.info(f"Built {encoder.model_name} from checkpoint.")
+        encoder.load_encoder_weights(logger, from_scratch=cfg.from_scratch)
+        logger.info(f"Built {encoder.model_name} from {'scratch' if cfg.from_scratch else 'checkpoint'}.")
     else:
         encoder.load_encoder_weights(logger)
         logger.info(f"Built {encoder.model_name} from checkpoint.")
@@ -298,7 +294,7 @@ def main(cfg: DictConfig) -> None:
             batch_size=cfg.batch_size,
             num_workers=cfg.num_workers,
             pin_memory=True,
-            persistent_workers=False, #causes memory leak
+            persistent_workers=True, #causes memory leak
             worker_init_fn=seed_worker,
             generator=get_generator(cfg.seed),
             drop_last=True,
@@ -311,7 +307,7 @@ def main(cfg: DictConfig) -> None:
             batch_size=cfg.test_batch_size,
             num_workers=cfg.test_num_workers,
             pin_memory=True,
-            persistent_workers=False, #causes memory leak
+            persistent_workers=True, #causes memory leak
             worker_init_fn=seed_worker,
             # generator=g,
             drop_last=True,
@@ -419,7 +415,7 @@ def main(cfg: DictConfig) -> None:
     if not cfg.pretrain:
         if cfg.dataset.support_test:
             if not isinstance(decoder, torch.nn.parallel.DistributedDataParallel):
-                del decoder.encoder.projector
+                #del decoder.encoder.projector
                 decoder = torch.nn.parallel.DistributedDataParallel(
                     decoder,
                     device_ids=[local_rank],
@@ -445,7 +441,7 @@ def main(cfg: DictConfig) -> None:
                 batch_size=cfg.test_batch_size,
                 num_workers=cfg.test_num_workers,
                 pin_memory=True,
-                persistent_workers=False, #causes memory leak
+                persistent_workers=True, #causes memory leak
                 drop_last=True,
                 collate_fn=collate_fn,
             )
