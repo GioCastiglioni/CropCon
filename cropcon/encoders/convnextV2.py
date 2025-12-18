@@ -146,7 +146,13 @@ class ConvNext(Encoder):
         return out, feature_maps, pad_mask, att
 
     def load_encoder_weights(self, logger: Logger, from_scratch: bool = True) -> None:
-        pass
+        if not from_scratch:
+            logger.info(f"Loading pre-trained weights from {self.encoder_weights}...")
+            model_dict = torch.load(self.encoder_weights, map_location="cpu", weights_only=False)["model"]
+            model_dict = {k[8:]: v for k,v in model_dict.items() if k.startswith("encoder.")}
+            self.load_state_dict(model_dict)
+            self.logger.info("Pre-trained weights loaded successfully.")
+        else:pass
 
 
 class LayerNorm(nn.Module):
