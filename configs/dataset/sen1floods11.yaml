@@ -1,6 +1,6 @@
 _target_: cropcon.datasets.sen1floods11.Sen1Floods11
 dataset_name: Sen1Floods11
-root_path: /home/gcastiglioni/data/sen1floods11_v1.1
+root_path: /home/gcastiglioni/workspace/Sen1Floods11
 download_url: 
 gcs_bucket: sen1floods11
 auto_download: True
@@ -9,7 +9,7 @@ support_test: True
 fold_config: 1
 
 img_size: 512
-multi_temporal: False
+multi_temporal: 1
 multi_modal: False
 
 ignore_index: -1

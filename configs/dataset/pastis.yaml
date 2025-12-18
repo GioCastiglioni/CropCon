@@ -1,11 +1,11 @@
 _target_: cropcon.datasets.pastis.Pastis
 dataset_name: Pastis
-root_path: /home/gcast/datasets/PASTIS-HD
+root_path: /shared/data/pangaea/PASTIS-HD
 download_url: null
 auto_download: False
 
 img_size: 128
-multi_temporal: 6
+multi_temporal: 61
 multi_modal: True
 fold_config: 1
 support_test: True

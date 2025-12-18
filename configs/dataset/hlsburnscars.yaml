@@ -1,10 +1,10 @@
 _target_: cropcon.datasets.hlsburnscars.HLSBurnScars
 dataset_name: HLSBurnScars
-root_path: /home/gcast/datasets/hlsburnscars
+root_path: /home/gcastiglioni/workspace/HLSBurnScars
 download_url: https://huggingface.co/datasets/ibm-nasa-geospatial/hls_burn_scars/resolve/main/hls_burn_scars.tar.gz?download=true
 auto_download: True
 img_size: 512
-multi_temporal: False
+multi_temporal: 1
 multi_modal: False
 support_test: True
 fold_config: 1
