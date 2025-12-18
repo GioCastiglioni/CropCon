@@ -322,8 +322,7 @@ class Trainer:
                 model_dict["model"]["conv_seg.bias"] = self.model.module.conv_seg.bias.data
                 self.model.module.load_state_dict(model_dict["model"])
                 self.start_epoch = 0
-                self.logger.info("Pre-trained weights loaded successfully. Deleting projection head from pretraining.")
-                del self.model.module.encoder.projector
+                self.logger.info("Pre-trained weights loaded successfully.")
                 self.logger.info("Starting downstream task from epoch 0.")
 
             
