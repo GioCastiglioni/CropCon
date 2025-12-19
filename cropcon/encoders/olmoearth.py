@@ -357,16 +357,24 @@ class OlmoEarthEncoderBackbone(nn.Module):
         for k, v in state_dict.items():
             if k.startswith("encoder."):
                 new_key = k.replace("encoder.", "")
-                new_state_dict[new_key] = v
-            elif not k.startswith("decoder"):
-                new_state_dict[k] = v
+            elif k.startswith("decoder"): 
+                continue 
+            else:
+                new_key = k
+
+            if "per_modality_embeddings" in new_key:
+                for mod in self.supported_modalities:
+                    nested_pattern = f".{mod}.{mod}__"
+                    flat_pattern = f".{mod}__"
+                    if nested_pattern in new_key:
+                        new_key = new_key.replace(nested_pattern, flat_pattern)
+            
+            new_state_dict[new_key] = v
         
         missing, unexpected = self.load_state_dict(new_state_dict, strict=False)
+        return missing, unexpected
 
 class OlmoEarth(BaseEncoder):
-    """
-    Wrapper compatible con la configuración de Hydra para usar OlmoEarth.
-    """
     def __init__(
         self,
         encoder_weights=None,
@@ -480,9 +488,11 @@ class OlmoEarth(BaseEncoder):
             if "model" in state_dict:
                 state_dict = state_dict["model"]
             
-            self.backbone.load_pretrained_weights(state_dict)
+            missing, _ = self.backbone.load_pretrained_weights(state_dict)
             
-            if logger: logger.info("OlmoEarth weights loaded successfully.")
+            if logger:
+                logger.info("OlmoEarth weights loaded successfully.")
+                logger.info(f"Missing Params: {missing}")
             
         except Exception as e:
             if logger: logger.error(f"Error loading weights: {e}")

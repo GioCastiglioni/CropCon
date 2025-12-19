@@ -4,7 +4,7 @@ download_url: https://huggingface.co/allenai/OlmoEarth-v1-Base/resolve/main/weig
 
 embed_dim: 768
 input_size: 224
-patch_size: 16
+patch_size: 8
 depth: 12
 num_heads: 12
 mlp_ratio: 4
