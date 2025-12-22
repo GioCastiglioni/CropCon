@@ -19,7 +19,6 @@ data/*
 data
 pretrained_models
 # Scenes for mados tiny
-# Wow gitignore pattern mathcing is a mess
 !data/mados
 data/mados/*
 !data/mados/splits
@@ -29,3 +28,4 @@ data/mados/splits/*
 .vscode
 .idea
 *.ipynb
+*.txt*
