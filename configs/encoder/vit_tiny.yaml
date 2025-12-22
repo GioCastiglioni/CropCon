@@ -1,12 +1,13 @@
 _target_: cropcon.encoders.vit.VIT_Encoder
-encoder_weights: ./pretrained_models/vit_s_lesits.pth
+model_name: "ViT-Tiny"
+encoder_weights: null
 download_url: null
 
-embed_dim: 384
+embed_dim: 192
 input_size: 224
 patch_size: 16
 depth: 12
-num_heads: 6
+num_heads: 3
 mlp_ratio: 4
 positional_encoding: "normal"
 
@@ -32,4 +33,4 @@ output_layers:
   - 7
   - 11
 
-output_dim: 384
+output_dim: 192

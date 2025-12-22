@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 from typing import Dict, List
 from einops import rearrange, repeat
 from .base import Encoder as BaseEncoder
+import math
 
 
 class ModalityConfig:
@@ -246,7 +248,7 @@ class Attention(nn.Module):
         self.q = nn.Linear(dim, dim, bias=qkv_bias)
         self.k = nn.Linear(dim, dim, bias=qkv_bias)
         self.v = nn.Linear(dim, dim, bias=qkv_bias)
-        self.attn_drop = nn.Dropout(attn_drop)
+        self.attn_drop = attn_drop
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
@@ -256,11 +258,13 @@ class Attention(nn.Module):
         k = self.k(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
         v = self.v(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
+        x = F.scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self.attn_drop if self.training else 0.0,
+            scale=self.scale
+        )
 
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -350,17 +354,48 @@ class OlmoEarthEncoderBackbone(nn.Module):
                 features.append(feat)
                 
         return features
+    
+    def interpolate_pos_embed(self, old_pos_embed, new_shape):
+        cls_token = old_pos_embed[:, 0:1, :]
+        grid_tokens = old_pos_embed[:, 1:, :]
+        
+        target_grid_len = new_shape[1] - 1 
+        current_grid_len = grid_tokens.shape[1]
+        
+        if target_grid_len == current_grid_len:
+            return old_pos_embed
+            
+        size_old = int(math.sqrt(current_grid_len))
+        size_new = int(math.sqrt(target_grid_len))
+        
+        if size_old * size_old != current_grid_len:
+            return old_pos_embed 
+            
+        grid_tokens = rearrange(grid_tokens, 'b (h w) d -> b d h w', h=size_old, w=size_old)
+        
+        new_grid_tokens = F.interpolate(
+            grid_tokens, 
+            size=(size_new, size_new), 
+            mode='bicubic', 
+            align_corners=False
+        )
+        
+        new_grid_tokens = rearrange(new_grid_tokens, 'b d h w -> b (h w) d')
+        
+        return torch.cat((cls_token, new_grid_tokens), dim=1)
 
     def load_pretrained_weights(self, state_dict):
-        """Limpia los prefijos del state_dict y carga los pesos."""
         new_state_dict = {}
+        own_state = self.state_dict()
+        
+        mismatched_shapes = []
+        interpolated_keys = []
+
         for k, v in state_dict.items():
-            if k.startswith("encoder."):
-                new_key = k.replace("encoder.", "")
-            elif k.startswith("decoder"): 
-                continue 
-            else:
-                new_key = k
+            if k.startswith("encoder."): new_key = k.replace("encoder.", "")
+            elif k.startswith("backbone."): new_key = k.replace("backbone.", "")
+            elif k.startswith("decoder"): continue 
+            else: new_key = k
 
             if "per_modality_embeddings" in new_key:
                 for mod in self.supported_modalities:
@@ -369,10 +404,36 @@ class OlmoEarthEncoderBackbone(nn.Module):
                     if nested_pattern in new_key:
                         new_key = new_key.replace(nested_pattern, flat_pattern)
             
+            if new_key in own_state:
+                target_shape = own_state[new_key].shape
+                if v.shape != target_shape:
+                    
+                    if "pos_embed" in new_key and len(v.shape) == 3:
+                        v = self.interpolate_pos_embed(v, target_shape)
+                        if v.shape == target_shape:
+                            interpolated_keys.append(new_key)
+                        
+                    elif "patch_embed" in new_key and "proj.weight" in new_key and len(v.shape) == 4:
+                        v = F.interpolate(
+                            v, 
+                            size=(target_shape[2], target_shape[3]), 
+                            mode='bicubic', 
+                            align_corners=False
+                        )
+                        interpolated_keys.append(new_key)
+                    
+                    if v.shape != target_shape:
+                        mismatched_shapes.append({
+                            "key": new_key,
+                            "pretrained": str(list(v.shape)),
+                            "current": str(list(target_shape))
+                        })
+                        continue 
+            
             new_state_dict[new_key] = v
         
         missing, unexpected = self.load_state_dict(new_state_dict, strict=False)
-        return missing, unexpected
+        return missing, unexpected, mismatched_shapes, interpolated_keys
 
 class OlmoEarth(BaseEncoder):
     def __init__(
@@ -488,11 +549,12 @@ class OlmoEarth(BaseEncoder):
             if "model" in state_dict:
                 state_dict = state_dict["model"]
             
-            missing, _ = self.backbone.load_pretrained_weights(state_dict)
+            missing, _, _, interpd = self.backbone.load_pretrained_weights(state_dict)
             
             if logger:
                 logger.info("OlmoEarth weights loaded successfully.")
                 logger.info(f"Missing Params: {missing}")
+                logger.info(f"Adapted Params: {interpd}")
             
         except Exception as e:
             if logger: logger.error(f"Error loading weights: {e}")
