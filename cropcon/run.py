@@ -4,6 +4,7 @@ os.environ["HYDRA_FULL_ERROR"] = "1"
 import pathlib
 import pprint
 import time
+from datetime import timedelta
 
 import hydra
 import torch
@@ -98,7 +99,7 @@ def main(cfg: DictConfig) -> None:
     device = torch.device("cuda", local_rank)
 
     torch.cuda.set_device(device)
-    torch.distributed.init_process_group(backend="nccl")
+    torch.distributed.init_process_group(backend="nccl", timeout=timedelta(minutes=30))
 
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         rank = torch.distributed.get_rank()
