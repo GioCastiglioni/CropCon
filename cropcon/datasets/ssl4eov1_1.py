@@ -1,6 +1,11 @@
-import xarray as xr
 import os
-from datetime import datetime
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["BLOSC_NTHREADS"] = "1"
+import xarray as xr
 
 import numpy as np
 import torch
@@ -121,13 +126,17 @@ class SSL4EO(RawGeoFMDataset):
 
         path = os.path.join(self.root_path, f"{self.split}/{self.modalities[0]}/{self.samples[file_idx][:-4]}")
 
-        ds = xr.open_zarr(path)
-        optical_ts = torch.from_numpy(ds["bands"][patch_idx].transpose("band", "time", "y", "x").values).type(torch.float32)
+        with xr.open_zarr(path, consolidated=True) as ds:
+            band_data = ds["bands"][patch_idx].transpose("band", "time", "y", "x").values
+            lat_val = ds["center_lat"].isel(sample=patch_idx).values
+            lon_val = ds["center_lon"].isel(sample=patch_idx).values
+            time_val = ds['time_'].isel(sample=patch_idx).values
 
-        lat = torch.from_numpy(ds["center_lat"].isel(sample=patch_idx).values).type(torch.float32)
-        lon = torch.from_numpy(ds["center_lon"].isel(sample=patch_idx).values).type(torch.float32)
+        optical_ts = torch.from_numpy(band_data).type(torch.float32)
+        lat = torch.from_numpy(lat_val).type(torch.float32)
+        lon = torch.from_numpy(lon_val).type(torch.float32)
 
-        time_positions = ds['time_'].isel(sample=patch_idx).values - self.reference_date
+        time_positions = time_val - self.reference_date
         time_positions = torch.from_numpy(time_positions.astype('timedelta64[D]').astype(int)).type(torch.float32)
 
         if self.multi_temporal == 1:
