@@ -596,58 +596,32 @@ class SegTrainer(Trainer):
             target (torch.Tensor): Target tensor. Forma: [B, H, W].
         """
         
-        # --- INICIO DE LA MODIFICACIÓN ---
-        
-        # 1. Renombrar 'logits' a 'features' para claridad
         features = logits
         B, D, H, W = features.shape
 
-        # 2. Obtener prototipos y sus dimensiones (C, K, D)
         prototypes = self.criterion.prototypes
         num_classes, K, proto_D = prototypes.shape
         
-        # 3. Normalizar features y aplanarlos
         features_norm = F.normalize(features, p=2, dim=1)
-        # [B, D, H, W] -> [B, H, W, D] -> [B*H*W, D]
         features_flat = features_norm.permute(0, 2, 3, 1).contiguous().view(-1, D)
-        
-        # 4. Aplanar prototipos
-        # [C, K, D] -> [C*K, D]
         all_prototypes_flat = prototypes.view(num_classes * K, D)
-
-        # 5. Calcular similitud Coseno (Eq. [cite_start]5: winner-takes-all) [cite: 231-232]
-        # [B*H*W, D] @ [D, C*K] -> [B*H*W, C*K]
         sim_all = features_flat @ all_prototypes_flat.T
-        
-        # 6. Encontrar el prototipo ganador (índice de 0 a C*K - 1)
         winning_prototype_idx = torch.argmax(sim_all, dim=1)
 
-        # 7. Convertir índice de prototipo a índice de CLASE
         pred_class_flat = winning_prototype_idx // K
         
-        # 8. Remodelar a [B, 1, H, W] para que coincida con tu lógica de scatter_
         pred = pred_class_flat.view(B, 1, H, W)
         
-        # --- FIN DE LA MODIFICACIÓN ---
-
-        # Tu lógica original para calcular métricas es compatible
-        # con el 'pred' que acabamos de generar.
-        
         target = target.unsqueeze(1)
-        # (Usando la variable de tu snippet original)
         ignore_mask = target == self.train_loader.dataset.ignore_index
         target[ignore_mask] = 0
         
-        # El 'num_classes' ahora viene de los prototipos, no de logits.shape[1]
         ignore_mask = ignore_mask.expand(
             -1, num_classes, -1, -1
         )
 
-        dims = list(features.shape) # Usamos features.shape
+        dims = list(features.shape) 
         dims[1] = num_classes
-        
-        # El caso 'num_classes == 1' ya no es necesario, 
-        # el método de prototipos es inherentemente multi-clase.
         
         binary_pred = torch.zeros(dims, dtype=bool, device=self.device)
         binary_target = torch.zeros(dims, dtype=bool, device=self.device)
@@ -659,7 +633,6 @@ class SegTrainer(Trainer):
         intersection = torch.logical_and(binary_pred, binary_target)
         union = torch.logical_or(binary_pred, binary_target)
 
-        # Añadimos EPSILON para evitar división por cero si una clase no aparece
         EPS = 1e-8 
         
         acc = intersection.sum() / (binary_target.sum() + EPS) * 100
