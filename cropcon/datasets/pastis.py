@@ -185,8 +185,7 @@ class Pastis(RawGeoFMDataset):
         Returns:
             dict[str, torch.Tensor | dict[str, torch.Tensor]]: output dictionary follwing the format
             {"image":
-                {"optical": torch.Tensor,
-                 "sar": torch.Tensor},
+                {"optical": torch.Tensor},
             "target": torch.Tensor,
              "metadata": dict}.
         """
