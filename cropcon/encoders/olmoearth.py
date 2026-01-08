@@ -439,6 +439,7 @@ class OlmoEarth(BaseEncoder):
     def __init__(
         self,
         encoder_weights=None,
+        model_name="olmo_earth",
         input_size=224,
         input_bands=None, 
         embed_dim=768,
@@ -453,7 +454,7 @@ class OlmoEarth(BaseEncoder):
         positional_encoding: str | None = "normal", 
     ):
         super().__init__(
-            model_name="olmo_earth",
+            model_name=model_name,
             encoder_weights=encoder_weights,
             input_bands=input_bands,
             input_size=input_size,
