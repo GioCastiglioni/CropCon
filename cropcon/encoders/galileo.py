@@ -271,19 +271,24 @@ class GalileoBackbone(nn.Module):
         mlp_ratio=2,
         max_sequence_length=24,
         patch_size=16,
+        use_embed_norm=False, 
+        use_qk_norm=False,
+        use_layerscale=False,
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.patch_size = patch_size
         self.space_time_groups = SPACE_TIME_BANDS_GROUPS_IDX
+
+        embed_norm_layer = nn.LayerNorm if use_embed_norm else nn.Identity
         
         self.space_time_embed = nn.ModuleDict({
-            group_name: FlexiPatchEmbed(in_chans=len(group), embed_dim=embed_dim, patch_size=patch_size, norm_layer=nn.LayerNorm)
+            group_name: FlexiPatchEmbed(in_chans=len(group), embed_dim=embed_dim, patch_size=patch_size, norm_layer=embed_norm_layer)
             for group_name, group in self.space_time_groups.items()
         })
         
         self.space_embed = nn.ModuleDict({
-            k: FlexiPatchEmbed(in_chans=len(v), embed_dim=embed_dim, patch_size=patch_size, norm_layer=nn.LayerNorm)
+            k: FlexiPatchEmbed(in_chans=len(v), embed_dim=embed_dim, patch_size=patch_size, norm_layer=embed_norm_layer)
             for k, v in {"SRTM": [0,1], "DW": list(range(9)), "WC": list(range(5))}.items()
         })
         
@@ -305,11 +310,13 @@ class GalileoBackbone(nn.Module):
         self.t_channel_embed = nn.Parameter(torch.zeros(3, int(embed_dim * 0.25))) 
         self.st_channel_embed = nn.Parameter(torch.zeros(4, int(embed_dim * 0.25)))
 
+        ls_init_values = 1e-5 if use_layerscale else None
+
         self.blocks = nn.ModuleList([
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, 
-                qkv_bias=True, qk_norm=True,
-                norm_layer=nn.LayerNorm, drop_path=0.0, init_values=1e-5
+                qkv_bias=True, qk_norm=use_qk_norm,
+                norm_layer=nn.LayerNorm, drop_path=0.0, init_values=ls_init_values
             )
             for _ in range(depth)
         ])
@@ -420,7 +427,10 @@ class GalileoTiny(BaseEncoder):
             mlp_ratio=mlp_ratio,
             num_heads=num_heads,
             patch_size=pretrained_patch_size,
-            max_sequence_length=24
+            max_sequence_length=24,
+            use_embed_norm=False,
+            use_qk_norm=False,
+            use_layerscale=False
         )
 
         self.projector = nn.Sequential(
