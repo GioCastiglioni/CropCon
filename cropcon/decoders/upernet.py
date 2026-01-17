@@ -272,6 +272,7 @@ class SegMTUPerNet(SegUPerNet):
         channels: int,
         multi_temporal: int,
         multi_temporal_strategy: str | None,
+        segmentation: bool = True,
         pool_scales: list[int] = [1, 2, 3, 6],
         feature_multiplier: int = 1,
     ) -> None:
@@ -284,6 +285,21 @@ class SegMTUPerNet(SegUPerNet):
             feature_multiplier=feature_multiplier,
             in_channels=encoder.topology,
         )
+        self.segmentation = segmentation
+        if not self.segmentation:
+            self.encoder.projector = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten(1),
+                nn.Linear(self.topology[-1], 1024),
+                nn.LayerNorm(normalized_shape=1024),
+                nn.GELU(),
+                nn.Dropout(p=0.15),
+                nn.Linear(1024, 1024),
+                nn.LayerNorm(normalized_shape=1024),
+                nn.GELU(),
+                nn.Dropout(p=0.15),
+                nn.Linear(1024, num_classes)
+            ).requires_grad_(True)
 
         self.multi_temporal = multi_temporal
         self.multi_temporal_strategy = multi_temporal_strategy
@@ -304,8 +320,6 @@ class SegMTUPerNet(SegUPerNet):
         Returns:
             torch.Tensor: output tensor of shape (B, num_classes, H', W') with (H' W') coressponding to the output_shape.
         """
-        if type(img) is dict: img=img["optical"]
-        else: pass
 
         # If the encoder handles multi_temporal we feed it with the input
         if not self.finetune:
@@ -331,24 +345,22 @@ class SegMTUPerNet(SegUPerNet):
     def forward(
         self, img: dict[str, torch.Tensor], batch_positions=None, output_shape: torch.Size | None = None, return_feats=False
     ) -> torch.Tensor:
-        
-        if type(img) is dict: pass
-        else: img = {'optical': img}
 
-        feat = self.forward_features(img, batch_positions, output_shape)
-        output = self.conv_seg(feat)
+        if self.segmentation:
+            feat = self.forward_features(img, batch_positions, output_shape)
+            output = self.conv_seg(feat)
+        else:
+            if not self.finetune:
+                with torch.no_grad():
+                    feat = self.encoder(img, batch_positions)[0]
+            else:
+                feat = self.encoder(img, batch_positions)[0]
+            
+            output = self.encoder.projector(feat)
 
         return output
 
     def collapse_T(self, feature_maps, att):
-        """
-        Colapsa la dimensión temporal T usando la atención del L-TAE.
-        Divide los canales de los feature maps entre las cabezas de atención.
-        
-        Args:
-            feature_maps: Lista de tensores (B, T, C, H_fm, W_fm)
-            att: Tensor de atención (Heads, B, T, H_last, W_last) -> Output del LTAE
-        """
         n_heads = att.shape[0]
         collapsed_maps = []
         
