@@ -210,6 +210,9 @@ def main(cfg: DictConfig) -> None:
                     else:
                         if "encoder" in name and not "projector" in name:
                             yield param
+                elif not encoder and projector:
+                    if "projector" in name:
+                        yield param
                 else:
                     if not "encoder" in name:
                         yield param
@@ -295,7 +298,7 @@ def main(cfg: DictConfig) -> None:
             batch_size=cfg.batch_size,
             num_workers=cfg.num_workers,
             pin_memory=True,
-            persistent_workers=True, #causes memory leak
+            persistent_workers=False, #causes memory leak
             worker_init_fn=seed_worker,
             generator=get_generator(cfg.seed),
             drop_last=True,
@@ -308,7 +311,7 @@ def main(cfg: DictConfig) -> None:
             batch_size=cfg.test_batch_size,
             num_workers=cfg.test_num_workers,
             pin_memory=True,
-            persistent_workers=True, #causes memory leak
+            persistent_workers=False, #causes memory leak
             worker_init_fn=seed_worker,
             # generator=g,
             drop_last=True,
@@ -361,12 +364,12 @@ def main(cfg: DictConfig) -> None:
             params.append({'params': decoder.module.encoder.tmap.parameters(), 'lr': cfg.optimizer.lr})
 
         if not cfg.pretrain: 
-            params.append({'params': params_extractor(decoder.module, encoder=False), 'lr': cfg.optimizer.lr})
+            params.append({'params': params_extractor(decoder.module, encoder=False, projector=(not cfg.decoder.segmentation)), 'lr': cfg.optimizer.lr})
             if str(criterion) == "BalancedContrastiveLearning":
                 params.append({'params': criterion.prot_mlp.parameters(), 'lr': cfg.optimizer.lr})
                 params.append({'params': criterion.views_mlp.parameters(), 'lr': cfg.optimizer.lr})
         if cfg.finetune:
-            params.append({'params': params_extractor(decoder.module, encoder=True, projector=cfg.pretrain), 'lr': cfg.optimizer.lr})
+            params.append({'params': params_extractor(decoder.module, encoder=True, projector=(cfg.pretrain or not cfg.decoder.segmentation)), 'lr': cfg.optimizer.lr})
 
         optimizer = instantiate(cfg.optimizer, params=None)
         optimizer = optimizer(params=params)
@@ -444,7 +447,7 @@ def main(cfg: DictConfig) -> None:
                 batch_size=cfg.test_batch_size,
                 num_workers=cfg.test_num_workers,
                 pin_memory=True,
-                persistent_workers=True, #causes memory leak
+                persistent_workers=False, #causes memory leak
                 drop_last=True,
                 collate_fn=collate_fn,
             )
