@@ -154,15 +154,19 @@ class Trainer:
             self.training_stats["data_time"].update(time.time() - end_time)
 
             with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
-                valid_pixels = (target != self.criterion.ignore_index)
                 
                 if str(self.criterion) != "BalancedContrastiveLearning":
                     if str(self.criterion) == "PrototypeBasedSemSegLoss": 
                         logits = self.model.module.forward_features(image, batch_positions=data["metadata"])
                     else: 
                         logits = self.model(image, batch_positions=data["metadata"])
-                    if valid_pixels.any(): loss = self.compute_loss(logits, target)
-                    else: loss = logits.sum() * 0.0
+                    
+                    if hasattr(self.model.module, 'segmentation') and not self.model.module.segmentation:
+                        loss = self.compute_loss(logits, target.float())
+                    else:
+                        valid_pixels = (target != self.criterion.ignore_index)
+                        if valid_pixels.any(): loss = self.compute_loss(logits, target)
+                        else: loss = logits.sum() * 0.0
 
                 else: 
                     logits = self.model(image, batch_positions=data["metadata"])
@@ -515,7 +519,7 @@ class SegTrainer(Trainer):
         )
 
         self.training_metrics = {
-            name: RunningAverageMeter(length=100) for name in ["Acc", "mAcc", "mIoU"]
+            name: RunningAverageMeter(length=100) for name in ["Acc", "mAcc", "mIoU" if self.model.module.segmentation else "mF1"]
         }
         self.best_metric = float("-inf")
         self.best_metric_comp = operator.gt
@@ -542,6 +546,39 @@ class SegTrainer(Trainer):
             logits (torch.Tensor): loggits from the decoder.
             target (torch.Tensor): target tensor.
         """
+        if logits.dim() == 2:
+            probs = torch.sigmoid(logits)
+            preds = (probs > 0.5).bool()
+            targets_bool = target.bool()
+
+            # TP (True Positives)
+            intersection = torch.logical_and(preds, targets_bool).sum(dim=0)
+            # Union (TP + FP + FN)
+            union = torch.logical_or(preds, targets_bool).sum(dim=0)
+            
+            # Real Positives (TP + FN) -> Soporte
+            target_count = targets_bool.sum(dim=0)
+            # Predicted Positives (TP + FP)
+            pred_count = preds.sum(dim=0)
+
+            epsilon = 1e-6
+
+            precision_per_class = intersection / (pred_count + epsilon)
+            recall_per_class = intersection / (target_count + epsilon)
+
+            f1_per_class = 2 * (precision_per_class * recall_per_class) / (precision_per_class + recall_per_class + epsilon)
+            mf1 = f1_per_class.mean() * 100
+
+            macc = recall_per_class.mean() * 100
+            
+            correct = (preds == targets_bool).float().mean() * 100
+            
+            self.training_metrics["Acc"].update(correct.item())
+            self.training_metrics["mAcc"].update(macc.item())
+            self.training_metrics["mF1"].update(mf1.item())
+            
+            return
+
         # logits = F.interpolate(logits, size=target.shape[1:], mode='bilinear')
         num_classes = logits.shape[1]
         if num_classes == 1:
