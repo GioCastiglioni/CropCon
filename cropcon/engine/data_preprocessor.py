@@ -34,9 +34,9 @@ class BasePreprocessor:
                     f"Image dimension must be 4 (C, T, H, W), Got {str(len(v.shape))}"
                 )
 
-        if len(data["target"].shape) != 2:
+        if len(data["target"].shape) != 2 and len(data["target"].shape) != 1:
             raise AssertionError(
-                f"Target dimension must be 2 (H, W), Got {str(len(data['target'].shape))}"
+                f"Target dimension must be 2 (H, W) or 1 (C), Got {str(len(data['target'].shape))}"
             )
 
     def check_size(self, data: dict[str, torch.Tensor | dict[str, torch.Tensor]]):
@@ -972,7 +972,7 @@ class Resize(BasePreprocessor):
                 antialias=self.antialias,
             )
 
-        if self.resize_target:
+        if self.resize_target and len(data["target"].shape) != 1:
             if torch.is_floating_point(data["target"]):
                 data["target"] = TF.resize(
                     data["target"].unsqueeze(0),
