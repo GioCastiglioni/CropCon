@@ -369,7 +369,7 @@ def main(cfg: DictConfig) -> None:
                 params.append({'params': criterion.prot_mlp.parameters(), 'lr': cfg.optimizer.lr})
                 params.append({'params': criterion.views_mlp.parameters(), 'lr': cfg.optimizer.lr})
         if cfg.finetune:
-            params.append({'params': params_extractor(decoder.module, encoder=True, projector=(cfg.pretrain or not cfg.decoder.segmentation)), 'lr': cfg.optimizer.lr})
+            params.append({'params': params_extractor(decoder.module, encoder=True, projector=cfg.pretrain), 'lr': cfg.optimizer.lr})
 
         optimizer = instantiate(cfg.optimizer, params=None)
         optimizer = optimizer(params=params)

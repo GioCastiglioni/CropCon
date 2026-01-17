@@ -290,15 +290,15 @@ class SegMTUPerNet(SegUPerNet):
             self.encoder.projector = nn.Sequential(
                 nn.AdaptiveAvgPool2d(1),
                 nn.Flatten(1),
-                nn.Linear(self.topology[-1], 1024),
-                nn.LayerNorm(normalized_shape=1024),
+                nn.Linear(self.topology[-1], 512),
+                nn.LayerNorm(normalized_shape=512),
                 nn.GELU(),
                 nn.Dropout(p=0.15),
-                nn.Linear(1024, 1024),
-                nn.LayerNorm(normalized_shape=1024),
+                nn.Linear(512, 512),
+                nn.LayerNorm(normalized_shape=512),
                 nn.GELU(),
                 nn.Dropout(p=0.15),
-                nn.Linear(1024, num_classes)
+                nn.Linear(512, num_classes)
             ).requires_grad_(True)
 
         self.multi_temporal = multi_temporal
